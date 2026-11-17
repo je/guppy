@@ -221,7 +221,6 @@
     return '';
   }
 
-
 </script>
 
 <section class="bulk-box">

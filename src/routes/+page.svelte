@@ -34,7 +34,6 @@
   let viewHistory = [];
   let activeMovie = null;
 
-
   async function runUniversalSearch(query) {
     const q = (query || '').trim();
     if (!q) return;

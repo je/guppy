@@ -41,7 +41,6 @@ function extractQuality(text) {
   return '';
 }
 
-
 export function inferMetadata(rawName) {
   let cleaned = rawName.replace(/\.[^/.]+$/, '');
   const imdbMatch = cleaned.match(/\[imdbid-(tt\d+)\]/i);

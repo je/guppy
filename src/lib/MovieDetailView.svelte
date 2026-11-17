@@ -519,7 +519,7 @@
         </div>
       </form>
 
-      {#if movie.status !== 'wanted'}
+      {#if movie.folder_name && onDrive && movie.status !== 'wanted'}
         <div class="sub-block">
           <h3>Drive Storage</h3>
           <div class="mono path">{movie.media_type === 'tv' ? TV_ROOT : MEDIA_ROOT}/{movie.folder_name}</div>
