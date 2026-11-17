@@ -1,0 +1,66 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability for the main window",
+  "windows": ["main"],
+  "permissions": [
+    "fs:default",
+    "core:default",
+    "dialog:default",
+    "sql:default",
+    "sql:allow-execute",
+    "sql:allow-select",
+    "http:allow-fetch",
+    "http:allow-fetch-send",
+    "http:allow-fetch-read-body",
+    "opener:default",
+    {
+      "identifier": "http:default",
+      "allow": [
+        { "url": "https://api.themoviedb.org/**" },
+        { "url": "https://image.tmdb.org/**" },
+        { "url": "https://*.wikipedia.org/**" },
+        { "url": "https://wikimedia.org/**" },
+        { "url": "https://upload.wikimedia.org**" }
+      ]
+    },
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [
+        { "path": "/Volumes/4TB0-SEAGATE/**" }
+      ]
+    },
+    {
+      "identifier": "opener:allow-reveal-item-in-dir",
+      "allow": [
+        { "path": "/Volumes/4TB0-SEAGATE/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-exists",
+      "allow": [
+        { "path": "/Volumes/4TB0-SEAGATE/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-read-dir",
+      "allow": [{ "path": "/Volumes/4TB0-SEAGATE/**" }]
+    },
+    {
+      "identifier": "fs:allow-mkdir",
+      "allow": [{ "path": "/Volumes/4TB0-SEAGATE/**" }]
+    },
+    {
+      "identifier": "fs:allow-rename",
+      "allow": [{ "path": "/Volumes/4TB0-SEAGATE/**" }]
+    },
+    {
+      "identifier": "fs:allow-write-text-file",
+      "allow": [{ "path": "/Volumes/4TB0-SEAGATE/**" }]
+    },
+    {
+      "identifier": "fs:allow-write-file",
+      "allow": [{ "path": "/Volumes/4TB0-SEAGATE/**" }]
+    }
+  ]
+}
