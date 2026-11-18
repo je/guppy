@@ -484,9 +484,27 @@ export async function fetchPersonFilmography(personName, selectedPersonId = null
     }
   }
 
-  const tvShows = [...tvMap.values()]
+    const rawTvList = [...tvMap.values()]
     .sort((a, b) => (b.episode_count || 0) - (a.episode_count || 0) || b.release_date.localeCompare(a.release_date))
     .slice(0, 18);
+
+  const tvShows = await Promise.all(
+    rawTvList.map(async (show, idx) => {
+      if (idx >= 8) return { ...show, seasons: Array.of(1) };
+      let seasons = Array.of(1);
+      try {
+        const dUrl = new URL(`https://${host}/3/tv/${show.id}`);
+        dUrl.searchParams.set("api_key", TMDB_API_KEY);
+        const dRes = await tauriFetch(dUrl.toString(), { method: 'GET', headers: { 'Accept': 'application/json' } });
+        const dData = await dRes.json();
+        const valid = (dData.seasons || [])
+          .filter(s => Number(s.season_number) > 0)
+          .map(s => Number(s.season_number));
+        if (valid.length > 0) seasons = valid;
+      } catch (_) {}
+      return { ...show, seasons };
+    })
+  );
 
   return {
     id: activePerson.id,

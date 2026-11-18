@@ -106,6 +106,12 @@
       const seasonData = await fetchTvSeasonDetails(movie.tmdb_id || movie.id, movie.season_number || 1).catch(() => null);
       if (seasonData?.episodes?.length > 0) {
         episodesList = seasonData.episodes;
+        movie = {
+          ...movie,
+          poster_url: seasonData.poster_url || movie.poster_url,
+          year: seasonData.air_date ? Number(seasonData.air_date.slice(0, 4)) : movie.year,
+          overview: seasonData.overview || movie.overview
+        };
       }
     }
 
@@ -332,7 +338,12 @@
         {/if}
         {#if extra?.writers}
           <dt>Writing</dt>
-          <dd>{extra.writers}</dd>
+          <dd>
+            {#each extra.writers.split(',').map(s => s.trim()).filter(Boolean) as writer, i}
+              {#if i > 0}, {/if}
+              <button type="button" class="person-link" on:click={() => onPersonClick?.(writer)}>{writer}</button>
+            {/each}
+          </dd>
         {/if}
         {#if extra?.cinematographer}
           <dt>Cinematography</dt>

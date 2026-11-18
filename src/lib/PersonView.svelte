@@ -9,7 +9,6 @@
   export let onSelectPerson;
   export let onBack;
   export let onAddWanted;
-  export let onAddWantedTv;
   export let onRemoveWanted;
   export let onWatchStatus;
   export let onOpenMovie;
@@ -425,24 +424,43 @@
     {/if}
 
   {/if}
-      {#if personData.tvShows?.length > 0}
+     {#if personData.tvShows?.length > 0}
       <h3 style="margin-top: 28px;">{personData.tvShows.length} TV Shows with {personData.name}</h3>
       <div class="film-grid">
         {#each personData.tvShows as show (show.id)}
           <article class="film-card">
-            {#if show.poster_url}
-              <img
-                src={show.poster_url}
-                alt={show.title}
-                on:error={(e) => { e.currentTarget.style.display = 'none'; }}
-              />
-            {:else}
-              <div class="no-poster">No Poster</div>
-            {/if}
+            <button
+              type="button"
+              class="poster-btn"
+              style="padding: 0; border: none; background: none; cursor: pointer;"
+              on:click={() => {
+                const s1 = findSeasonMatch(show, 1, databaseEntries);
+                onOpenMovie?.(s1 || { ...show, tmdb_id: show.id, media_type: 'tv', season_number: 1 });
+              }}
+              title="Open show details"
+            >
+              {#if show.poster_url}
+                <img
+                  src={show.poster_url}
+                  alt={show.title}
+                  on:error={(e) => { e.currentTarget.style.display = 'none'; }}
+                />
+              {:else}
+                <div class="no-poster">No Poster</div>
+              {/if}
+            </button>
             <div class="film-meta">
               <div class="film-title-row">
                 <div class="title-left">
-                  <strong>{show.title}</strong> <span class="mono">({show.year || 'n.d.'})</span>
+                  <button
+                    type="button"
+                    class="person-link"
+                    style="font-weight: bold; text-align: left;"
+                    on:click={() => {
+                      const s1 = findSeasonMatch(show, 1, databaseEntries);
+                      onOpenMovie?.(s1 || { ...show, tmdb_id: show.id, media_type: 'tv', season_number: 1 });
+                    }}
+                  >{show.title}</button> <span class="mono">({show.year || 'n.d.'})</span>
                 </div>
               </div>
 
@@ -461,9 +479,9 @@
                     class:season-owned={sMatch && sMatch.status !== 'wanted'}
                     class:season-wanted={sMatch?.status === 'wanted'}
                     title={sMatch
-                      ? `${sLabel} in catalog (${sMatch.status === 'wanted' ? 'Wanted' : 'On Drive'} · ${sWatch || 'Unseen'})`
-                      : `Add ${show.title} ${sLabel} to Wanted`}
-                    on:click={() => { if (!sMatch) onAddWantedTv?.(show, sNum); }}
+                      ? `Open ${show.title} ${sLabel} (${sMatch.status === 'wanted' ? 'Wanted' : 'On Drive'} · ${sWatch || 'Unseen'})`
+                      : `Open ${show.title} ${sLabel} details`}
+                    on:click={() => onOpenMovie?.(sMatch || { ...show, tmdb_id: show.id, media_type: 'tv', season_number: Number(sNum) || 1 })}
                   >
                     {#if sMatch}
                       {#if sWatch === 'liked'}

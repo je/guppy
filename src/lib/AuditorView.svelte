@@ -14,6 +14,7 @@
   export let syncStatus = '';
   export let showBulkForm = false;
   export let onPickImport;
+  export let onAudit;
   export let onRescan;
   export let onSyncSidecars;
   export let onExportJson;
@@ -98,14 +99,16 @@
   <button type="button" class="btn-secondary" on:click={onExportJson}>Export JSON</button>
 </div>
 
-{#if showBulkForm}
-  <BulkWantedModal
-    {databaseEntries}
-    {diskFolders}
-    onClose={onToggleBulk}
-    onComplete={onRescan}
-  />
-{/if}
+  {#if showBulkForm}
+    <BulkWantedModal
+      {databaseEntries}
+      {diskFolders}
+      onClose={onToggleBulk}
+      onComplete={async (count) => {
+        await onAudit?.(count);
+      }}
+    />
+  {/if}
 
 {#if importQueue.length > 0}
   <section class="staged-section">

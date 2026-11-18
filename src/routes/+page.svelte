@@ -671,9 +671,16 @@
         await runAudit();
       }}
       onRemoveWanted={async (film) => {
-        const match = databaseEntries.find(
-          d => d.status === 'wanted' && d.title?.toLowerCase() === film.title?.toLowerCase() && (!film.year || String(d.year) === String(film.year))
-        );
+        const match = film.media_type === 'tv'
+          ? databaseEntries.find(
+              d => d.status === 'wanted' && d.media_type === 'tv' &&
+                Number(d.season_number) === Number(film.season_number || 1) &&
+                (Number(d.tmdb_id) === Number(film.id) || d.title?.toLowerCase() === film.title?.toLowerCase())
+            )
+          : databaseEntries.find(
+              d => d.status === 'wanted' && (d.media_type || 'movie') === 'movie' &&
+                d.title?.toLowerCase() === film.title?.toLowerCase() && (!film.year || String(d.year) === String(film.year))
+            );
         if (match) await handleDelete(match.folder_name);
       }}
       onAddWantedTv={async (show, seasonNum) => {
@@ -729,9 +736,16 @@
         await runAudit();
       }}
       onRemoveWanted={async (film) => {
-        const match = databaseEntries.find(
-          d => d.status === 'wanted' && d.title?.toLowerCase() === film.title?.toLowerCase() && (!film.year || String(d.year) === String(film.year))
-        );
+        const match = film.media_type === 'tv'
+          ? databaseEntries.find(
+              d => d.status === 'wanted' && d.media_type === 'tv' &&
+                Number(d.season_number) === Number(film.season_number || 1) &&
+                (Number(d.tmdb_id) === Number(film.id) || d.title?.toLowerCase() === film.title?.toLowerCase())
+            )
+          : databaseEntries.find(
+              d => d.status === 'wanted' && (d.media_type || 'movie') === 'movie' &&
+                d.title?.toLowerCase() === film.title?.toLowerCase() && (!film.year || String(d.year) === String(film.year))
+            );
         if (match) await handleDelete(match.folder_name);
       }}
       onAddWantedTv={async (show, seasonNum) => {
@@ -773,6 +787,13 @@
       {showBulkForm}
       onPickImport={pickImportFolder}
       onToggleBulk={() => showBulkForm = !showBulkForm}
+      onAudit={async (addedCount = 0) => {
+        await runAudit();
+        if (addedCount > 0) {
+          statusMsg = `Added ${addedCount} ${addedCount === 1 ? 'title' : 'titles'} to Wanted.`;
+          setTimeout(() => { if (statusMsg.startsWith('Added ')) statusMsg = ''; }, 3500);
+        }
+      }}
       onRescan={async () => {
         statusMsg = 'Rescanning library folders…';
         await runAudit();

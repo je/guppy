@@ -66,9 +66,11 @@
       } else {
         base = parseBulkLines(cleanedForMovie).at(0) || { raw: moviePart, title: cleanedForMovie, year: '', director: '', imdbId: '' };
       }
-
       return {
         ...base,
+        draftTitle: base.title || '',
+        draftYear: base.year || '',
+        draftDirector: base.director || '',
         key: `${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
         raw: rawLine,
         isTv: Boolean(seasonNumber),
@@ -78,12 +80,12 @@
         refining: false,
         matches: [],
         selected: null,
+        previewMatch: null,
         existingMatch: null,
         status: 'pending'
       };
     });
   }
-
 
   function isTitleMismatch(row, sel) {
     if (!sel) return false;
@@ -93,24 +95,35 @@
     return Boolean(inTitle && outTitle && inTitle !== outTitle);
   }
 
-
   async function lookupSingleRow(row) {
     const qTitle = (row.title || '').trim();
     const qYear = (row.year || '').trim();
     const qDir = (row.director || '').trim();
-    const imdbMatch = qTitle.match(/^(tt\d{6,9})$/i);
+    const imdbMatch = qTitle.match(/^(?:tt)?(\d{7,8})$/i);
 
     if (imdbMatch) {
-      return await findTmdbByImdbId(imdbMatch[1]);
+      return await findTmdbByImdbId(`tt${imdbMatch[1]}`);
     }
     if (row.imdbId) {
-      return await findTmdbByImdbId(row.imdbId);
+      const normalizedImdb = /^tt/i.test(row.imdbId) ? row.imdbId : `tt${row.imdbId}`;
+      return await findTmdbByImdbId(normalizedImdb);
     }
     if (row.isTv) {
       const tvRes = await searchTmdbTv(qTitle, qYear);
       return tvRes.map(s => ({ ...s, season_number: row.seasonNumber || 1 }));
     }
-    return await searchTmdb(qTitle, qYear, qDir);
+
+    const movieRes = await searchTmdb(qTitle, qYear, qDir);
+    const topMovie = movieRes.at(0);
+    if (!topMovie || isTitleMismatch(row, topMovie)) {
+      const tvRes = await searchTmdbTv(qTitle, qYear);
+      const topTv = tvRes.at(0);
+      if (topTv && !isTitleMismatch(row, topTv)) {
+        const taggedTv = tvRes.map(s => ({ ...s, season_number: row.seasonNumber || 1 }));
+        return [...taggedTv, ...movieRes];
+      }
+    }
+    return movieRes;
   }
 
   async function runBulkLookup() {
@@ -146,15 +159,23 @@
   async function refineRow(index) {
     const row = rows.at(index);
     if (!row) return;
-    rows[index] = { ...row, status: 'searching' };
+    const updatedQuery = {
+      ...row,
+      title: (row.draftTitle ?? row.title).trim(),
+      year: (row.draftYear ?? row.year).trim(),
+      director: (row.draftDirector ?? row.director).trim(),
+      status: 'searching'
+    };
+    rows[index] = updatedQuery;
     try {
-      const results = await lookupSingleRow(row);
+      const results = await lookupSingleRow(updatedQuery);
       const topMatch = results.at(0) || null;
       const existing = findExistingInCatalog(topMatch);
-      const mismatch = isTitleMismatch(row, topMatch);
+      const mismatch = isTitleMismatch(updatedQuery, topMatch);
 
       rows[index] = {
-        ...row,
+        ...updatedQuery,
+        previewMatch: null,
         matches: results,
         existingMatch: existing,
         selected: (existing || mismatch) ? null : topMatch,
@@ -162,10 +183,9 @@
         status: results.length > 0 ? 'matched' : 'none'
       };
     } catch (_) {
-      rows[index] = { ...row, status: 'error' };
+      rows[index] = { ...updatedQuery, status: 'error' };
     }
   }
-
 
   function setBatchWatch(nextWatch) {
     defaultWatch = nextWatch;
@@ -184,24 +204,33 @@
     const toSave = rows.filter(r => r.selected);
     if (toSave.length === 0) return;
     saving = true;
-    for (const r of toSave) {
-      if (r.selected.media_type === 'tv') {
-        await saveWantedTvSeason(r.selected, r.selected.season_number || r.seasonNumber || 1, {
-          tags: r.tags || '',
-          watch_status: r.watch_status || ''
-        });
-      } else {
-        await saveWantedMovie({
-          ...r.selected,
-          quality: '',
-          tags: r.tags || '',
-          watch_status: r.watch_status || ''
-        });
+    let savedCount = 0;
+    try {
+      for (const r of toSave) {
+        if (r.selected.media_type === 'tv') {
+          await saveWantedTvSeason(r.selected, r.selected.season_number || r.seasonNumber || 1, {
+            tags: r.tags || '',
+            watch_status: r.watch_status || ''
+          });
+        } else {
+          await saveWantedMovie({
+            ...r.selected,
+            quality: '',
+            tags: r.tags || '',
+            watch_status: r.watch_status || ''
+          });
+        }
+        savedCount++;
       }
+      rows = [];
+      rawText = '';
+      await onComplete?.(savedCount);
+      onClose?.();
+    } catch (err) {
+      alert(`Bulk save stopped after ${savedCount} titles: ${err}`);
+    } finally {
+      saving = false;
     }
-    saving = false;
-    await onComplete();
-    onClose();
   }
 
   function getMismatchNote(row, sel) {
@@ -313,7 +342,7 @@ Better Call Saul Season 6 | drama"
   {#if rows.length > 0}
     <div class="results-list">
       {#each rows as row, i (row.key)}
-        {@const sel = row.selected || row.matches.at(0)}
+        {@const sel = row.selected || row.previewMatch || row.matches.at(0)}
         {@const poster = sel?.poster_url || (sel?.poster_path ? posterSmall + sel.poster_path : '')}
         {@const ex = row.existingMatch}
         {@const mismatchNote = getMismatchNote(row, sel)}
@@ -368,18 +397,18 @@ Better Call Saul Season 6 | drama"
                 <input
                   type="text"
                   placeholder="Title or tt1234567"
-                  bind:value={rows[i].title}
+                  bind:value={rows[i].draftTitle}
                 />
                 <input
                   type="text"
                   placeholder="Year"
                   style="max-width: 68px;"
-                  bind:value={rows[i].year}
+                  bind:value={rows[i].draftYear}
                 />
                 <input
                   type="text"
                   placeholder="Director"
-                  bind:value={rows[i].director}
+                  bind:value={rows[i].draftDirector}
                 />
                 <button type="submit" class="btn-primary" disabled={row.status === 'searching'}>
                   {row.status === 'searching' ? '…' : 'Search'}
@@ -417,7 +446,14 @@ Better Call Saul Season 6 | drama"
                 on:change={(e) => {
                   const chosen = row.matches.find(m => String(m.id) === e.target.value) || null;
                   const existing = findExistingInCatalog(chosen);
-                  rows[i] = { ...row, existingMatch: existing, selected: existing ? null : chosen };
+                  rows[i] = {
+                    ...row,
+                    previewMatch: chosen,
+                    existingMatch: existing,
+                    selected: existing ? null : chosen,
+                    title: chosen ? chosen.title : row.title,
+                    year: chosen ? (chosen.release_date?.slice(0, 4) || String(chosen.year || '') || row.year) : row.year
+                  };
                 }}
               >
                 <option value="">
