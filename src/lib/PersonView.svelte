@@ -12,6 +12,22 @@
   export let personData;
   export let loading = false;
   export let databaseEntries = [];
+  export let allDatabaseEntries = null;
+
+  $: hiddenAdultEntries = (allDatabaseEntries || databaseEntries).filter(d => {
+    const isAdult = String(d.tags || '').toLowerCase().split(',').map(s => s.trim()).includes('adult');
+    return isAdult && !databaseEntries.some(v => v.folder_name === d.folder_name);
+  });
+
+  function isHiddenAdultMatch(item, kind = 'movie') {
+    if (!item || hiddenAdultEntries.length === 0) return false;
+    const yr = item.year ? String(item.year) : (item.release_date ? item.release_date.slice(0, 4) : '');
+    return hiddenAdultEntries.some(d =>
+      (d.media_type || 'movie') === kind &&
+      ((item.id && Number(d.tmdb_id) === Number(item.id)) ||
+        (d.title?.toLowerCase() === item.title?.toLowerCase() && (!yr || String(d.year) === yr)))
+    );
+  }
   export let diskFolders = [];
   export let watchFilter = 'all';
   export let onSelectPerson;
@@ -27,6 +43,45 @@
   let justAddedIds = new Set();
   let justRemovedIds = new Set();
   let addedWatchById = {};
+  let editingPendingTagId = null;
+  let draftPendingTags = '';
+  let draftPendingClips = '';
+  let savedTagIds = new Set();
+
+  function openPendingTagEditor(film) {
+    if (editingPendingTagId === film.id) {
+      editingPendingTagId = null;
+      return;
+    }
+    editingPendingTagId = film.id;
+    draftPendingTags = film.tags || '';
+    draftPendingClips = film.clips || '';
+  }
+
+  async function savePendingTags(film) {
+    const match = databaseEntries.find(
+      d => (d.media_type || 'movie') === 'movie' &&
+        d.title?.toLowerCase() === film.title?.toLowerCase() &&
+        (!film.year || String(d.year) === String(film.year))
+    );
+    if (match && onSaveTags) {
+      await onSaveTags(match.folder_name, draftPendingTags, draftPendingClips);
+    } else if (onAddWanted) {
+      const nextRemoved = new Set(justRemovedMovies);
+      nextRemoved.delete(film.id);
+      justRemovedMovies = nextRemoved;
+      justAddedMovies = new Set([...justAddedMovies, film.id]);
+      addedWatchById = { ...addedWatchById, [film.id]: '' };
+      await onAddWanted({
+        ...film,
+        watch_status: '',
+        tags: draftPendingTags,
+        clips: draftPendingClips
+      });
+    }
+    savedTagIds = new Set([...savedTagIds, film.id]);
+    editingPendingTagId = null;
+  }
 
   $: if (personData?.id && personData.id !== lastPersonId) {
     lastPersonId = personData.id;
@@ -202,7 +257,7 @@
     {#if filteredDirected.length > 0}
       <h3>{filteredDirected.length} Directed by {personData.name}</h3>
       <div class="grid-3">
-        {#each filteredDirected as film (film.id)}
+        {#each filteredDirected.filter(f => !isHiddenAdultMatch(f, 'movie')) as film (film.id)}
           {@const dbMatch = justRemovedIds.has(film.id) ? null : getCatalogMatch(film, databaseEntries).at(0)}
           {#if dbMatch}
             <LoggedCard
@@ -254,6 +309,15 @@
                           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
                         </button>
                       {/if}
+                      <button
+                          type="button"
+                          class="icon-btn"
+                          on:click|stopPropagation={() => openPendingTagEditor(film)}
+                          title={savedTagIds.has(film.id) ? 'Tags saved (click to edit)' : 'Add Tags & Clips'}
+                          aria-label="Edit Tags & Clips"
+                        >
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2H2v10l9.29 9.29c.94.94 2.48.94 3.42 0l6.58-6.58c.94-.94.94-2.48 0-3.42L12 2Z"/><path d="M7 7h.01"/></svg>
+                        </button>
                       <span class="watch-triad">
                         <button type="button" class="icon-btn" class:active-watch={isPendingWanted && curWatch === ''} on:click|stopPropagation={() => handleDotAction(film, '', personData.name)} title="Add to Not Available as Unseen" aria-label="Unseen">
                           <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.5" fill="#fffff8" stroke="#111" stroke-width="1.5" /></svg>
@@ -287,6 +351,15 @@
                           <button type="button" class="person-link" on:click|stopPropagation={() => onPersonClick?.(actor)}>{actor}</button>
                         {/each}
                       {/if}
+                    </div>
+                  {/if}
+                  {#if editingPendingTagId === film.id}
+                    <div class="tag-editor">
+                      <div class="tag-row">
+                        <input type="text" placeholder="Tags (comma-separated, e.g. noir, 4k, adult)…" bind:value={draftPendingTags} />
+                        <input type="text" placeholder="Clips / scenes…" bind:value={draftPendingClips} />
+                        <button type="button" class="btn btn-sm" on:click|stopPropagation={() => savePendingTags(film)}>Save</button>
+                      </div>
                     </div>
                   {/if}
                   {#if film.overview}<p class="synopsis">{film.overview}</p>{/if}

@@ -1,4 +1,5 @@
 <script>
+  import { onDestroy } from 'svelte';
   import LoggedCard from '$lib/LoggedCard.svelte';
 
   export let databaseEntries = [];
@@ -18,6 +19,32 @@
 
   let layoutMode = 'cards';
   let sortBy = 'recent';
+  let visibleLimit = 60;
+  let sentinelEl = null;
+  let observer = null;
+
+  $: filterKey = `${typeFilter}|${collectionFilter}|${searchFilter}|${sortBy}|${layoutMode}`;
+  let prevFilterKey = '';
+  $: if (filterKey !== prevFilterKey) {
+    prevFilterKey = filterKey;
+    visibleLimit = 60;
+  }
+
+  $: displayedEntries = sortedEntries.slice(0, visibleLimit);
+
+  $: if (sentinelEl) {
+    if (observer) observer.disconnect();
+    observer = new IntersectionObserver((entries) => {
+      if (entries.some(e => e.isIntersecting) && visibleLimit < sortedEntries.length) {
+        visibleLimit += 60;
+      }
+    }, { rootMargin: '600px' });
+    observer.observe(sentinelEl);
+  }
+
+  onDestroy(() => {
+    if (observer) observer.disconnect();
+  });
 
   $: wantedCount = databaseEntries.filter(i => i.status === 'wanted').length;
   $: collectedCount = databaseEntries.length - wantedCount;
@@ -132,7 +159,7 @@
   </div>
 
   <div class:grid-3={layoutMode === 'cards' || layoutMode === 'compact'} class:poster-wall={layoutMode === 'posters'}>
-    {#each sortedEntries as item (item.folder_name)}
+    {#each displayedEntries as item (item.folder_name)}
       <LoggedCard
         {item}
         layout={layoutMode}
@@ -150,4 +177,14 @@
       />
     {/each}
   </div>
+  {#if visibleLimit < sortedEntries.length}
+    <div bind:this={sentinelEl} style="display:flex;justify-content:center;gap:10px;padding:18px 0;">
+      <button type="button" class="btn btn-sm" on:click={() => visibleLimit += 120}>
+        Load more ({displayedEntries.length} of {sortedEntries.length})
+      </button>
+      <button type="button" class="btn btn-sm" on:click={() => visibleLimit = sortedEntries.length}>
+        Show all ({sortedEntries.length})
+      </button>
+    </div>
+  {/if}
 </section>

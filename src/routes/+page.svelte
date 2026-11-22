@@ -88,6 +88,7 @@
   async function runAudit() {
     try {
       const db = await initDb();
+      databaseEntries = await db.select("SELECT * FROM wishlist_videos ORDER BY title ASC");
 
       const theMovieEntries = await readDir(THE_MOVIES_ROOT).catch(() => []);
       const theMovieFolders = theMovieEntries
@@ -108,8 +109,10 @@
         .sort();
 
       diskFolders = [...new Set([...movieFolders, ...tvFolders])].sort();
-      await reconcileTvEpisodesOnDisk();
-      databaseEntries = await db.select("SELECT * FROM wishlist_videos ORDER BY title ASC");
+      if (!isRemote) {
+        await reconcileTvEpisodesOnDisk();
+        databaseEntries = await db.select("SELECT * FROM wishlist_videos ORDER BY title ASC");
+      }
       if (activeMovie?.folder_name) {
         const refreshed = databaseEntries.find(e => e.folder_name === activeMovie.folder_name);
         if (refreshed) activeMovie = refreshed;
@@ -118,7 +121,7 @@
       orphans = movieFolders.filter(f => !inDb.includes(f));
 
       const nextInputs = { ...inputs };
-      for (const folder of orphans) {
+      if (!isRemote) for (const folder of orphans) {
         const key = `root:${folder}`;
         const orphanRoot = theMovieFolders.includes(folder) ? THE_MOVIES_ROOT : MEDIA_ROOT;
         if (!Reflect.get(nextInputs, key)) Reflect.set(nextInputs, key, await inferFolder(`${orphanRoot}/${folder}`, folder));
@@ -920,7 +923,8 @@
     <SearchResultsView
       results={universalResults}
       loading={loadingUniversal}
-      {databaseEntries}
+      databaseEntries={visibleEntries}
+      allDatabaseEntries={databaseEntries}
       {diskFolders}
       {searchResults}
       onSelectPerson={(name, id) => openPersonPage(name, id)}
@@ -998,7 +1002,8 @@
     <PersonView
       personData={activePersonData}
       loading={loadingPerson}
-      {databaseEntries}
+      databaseEntries={visibleEntries}
+      allDatabaseEntries={databaseEntries}
       {diskFolders}
       {searchResults}
       {watchFilter}

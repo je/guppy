@@ -590,9 +590,9 @@ export async function saveWantedMovie(movie) {
 
   await db.execute(
     `INSERT INTO wishlist_videos (
-      folder_name, title, year, quality, imdb_id, poster_url, director, cast_list, overview, tags,
+      folder_name, title, year, quality, imdb_id, poster_url, director, cast_list, overview, tags, clips,
       watch_status, status, media_type, tmdb_id
-    ) VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, 'wanted', 'movie', ?)`,
+    ) VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, 'wanted', 'movie', ?)`,
     [
       folderName,
       title,
@@ -603,6 +603,7 @@ export async function saveWantedMovie(movie) {
       enriched.cast_list || movie.cast_list || '',
       enriched.overview || movie.overview || '',
       movie.tags || '',
+      movie.clips || '',
       watchStatus,
       tmdbId
     ]
@@ -649,6 +650,8 @@ export async function updateExistingMovie(oldFolderName, existing, movie, onDisk
     `UPDATE wishlist_videos SET folder_name=?, title=?, year=COALESCE(NULLIF(?,''),year), imdb_id=?, poster_url=?, director=?, cast_list=?, overview=?, tmdb_id=COALESCE(NULLIF(?,0),tmdb_id) WHERE folder_name=?`,
     [newFolderName, enriched.title, year, enriched.imdb_id || '', enriched.poster_url || '', enriched.director || '', enriched.cast_list || '', enriched.overview || '', tmdbId, oldFolderName]
   );
+  const metaLabel = `${enriched.title || oldFolderName}${year ? ` (${year})` : ''}`;
+  await logActivity('Updated Metadata', metaLabel, enriched.director || '');
 
   if (existing?.status !== 'wanted' && onDisk) {
     await writeJellyfinSidecars(`${newRoot}/${newFolderName}`, {
@@ -709,7 +712,8 @@ export async function enrichFilmBatch(list) {
 
 export async function fetchPersonFilmography(personName, selectedPersonId = null) {
   const host = ["api", "themoviedb", "org"].join(".");
-  const cleanName = String(personName || '').trim();
+  const titleHint = (String(personName || '').match(/\(([^)]+)\)/)?.[1] || '').toLowerCase().trim();
+  const cleanName = String(personName || '').replace(/\s*\([^)]*\)\s*/g, ' ').replace(/\s+/g, ' ').trim();
   if (!cleanName && !selectedPersonId) throw new Error("No person name provided.");
 
   let matches = [];
@@ -736,7 +740,8 @@ export async function fetchPersonFilmography(personName, selectedPersonId = null
         seenIds.add(p.id);
         const hasFullName = p.name.trim().includes(' ');
         const hasCredits = Array.isArray(p.known_for) && p.known_for.length > 0;
-        return hasFullName ? hasCredits : (hasCredits && p.popularity > 1.5);
+        const exactName = (p.name || '').toLowerCase() === cleanName.toLowerCase();
+        return exactName || (hasFullName ? hasCredits : (hasCredits && p.popularity > 1.5));
       })
       .slice(0, 12)
       .map(p => {
@@ -750,9 +755,12 @@ export async function fetchPersonFilmography(personName, selectedPersonId = null
         };
       });
 
+    const hintedMatch = titleHint
+      ? matches.find(p => (p.knownTitle || '').toLowerCase().includes(titleHint))
+      : null;
     activePerson = selectedPersonId
-      ? matches.find(p => p.id === selectedPersonId) || matches.at(0)
-      : matches.at(0);
+      ? matches.find(p => p.id === selectedPersonId) || hintedMatch || matches.at(0)
+      : hintedMatch || matches.at(0);
   } else if (selectedPersonId) {
     activePerson = { id: selectedPersonId, name: '', knownFor: '' };
   }
@@ -1072,6 +1080,9 @@ export async function updateMovieTagsAndClips(folderName, tags, clips) {
 
   const rows = await db.select("SELECT * FROM wishlist_videos WHERE folder_name = ?", [folderName]);
   const entry = rows.at(0);
+  const tagLabel = entry ? `${entry.title}${entry.year ? ` (${entry.year})` : ''}` : folderName;
+  const tagSummary = [cleanTags ? `Tags: ${cleanTags}` : '', cleanClips ? `Clips: ${cleanClips}` : ''].filter(Boolean).join(' · ') || 'Cleared';
+  await logActivity('Updated Tags', tagLabel, tagSummary);
   if (entry && entry.status !== 'wanted') {
     const targetRoot = getMediaRoot(entry);
     const otherRoot = targetRoot === MEDIA_ROOT ? THE_MOVIES_ROOT : MEDIA_ROOT;
