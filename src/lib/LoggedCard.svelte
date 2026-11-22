@@ -1,5 +1,6 @@
 <script>
-  import { getPrimaryVideoExt } from '$lib/guppyStore.js';
+  import { getPrimaryVideoExt, THE_MOVIES_ROOT, MEDIA_ROOT, TV_ROOT } from '$lib/guppyStore.js';
+  import { exists } from '@tauri-apps/plugin-fs';
   import { revealItemInDir, openPath } from '@tauri-apps/plugin-opener';
   import { getMediaRoot, fetchMovieKeywords, computeSeasonWatchStatus, playInVlc, resolveLocalMediaPath } from '$lib/guppyStore.js';
   export let item;
@@ -67,11 +68,23 @@
     onDelete?.();
   }
 
+  const isDesktopTauri = typeof window !== 'undefined' && Boolean(window.__TAURI_INTERNALS__);
+
   async function openMovieFolder() {
     try {
-      const baseRoot = getMediaRoot(item);
-      const resolvedPath = await resolveLocalMediaPath(`${baseRoot}/${item.folder_name}`);
-      await openPath(resolvedPath);
+      const primaryRoot = getMediaRoot(item);
+      const candidates = item.media_type === 'tv'
+        ? [primaryRoot, TV_ROOT]
+        : [primaryRoot, THE_MOVIES_ROOT, MEDIA_ROOT];
+      let targetPath = await resolveLocalMediaPath(`${primaryRoot}/${item.folder_name}`);
+      for (const root of [...new Set(candidates)]) {
+        const candidate = await resolveLocalMediaPath(`${root}/${item.folder_name}`);
+        if (await exists(candidate).catch(() => false)) {
+          targetPath = candidate;
+          break;
+        }
+      }
+      await openPath(targetPath);
     } catch (err) {
       alert(`Could not open folder: ${err}`);
     }
@@ -84,8 +97,13 @@
 
   async function copyImdb() {
     if (!item.imdb_id) return;
+    const url = imdbBase + item.imdb_id;
+    if (!isDesktopTauri) {
+      window.open(url, '_blank', 'noopener');
+      return;
+    }
     try {
-      await navigator.clipboard.writeText(imdbBase + item.imdb_id);
+      await navigator.clipboard.writeText(url);
       copiedNote = true;
       setTimeout(() => copiedNote = false, 1400);
     } catch (_) {}
@@ -147,7 +165,7 @@
   $: isIncompleteSeason = item?.media_type === 'tv' && tvEpisodeCounts.owned > 0 && (item?.status === 'wanted' || tvEpisodeCounts.owned < tvEpisodeCounts.total);
   $: fileExt = '';
   let extCheckedKey = '';
-  $: if (onDrive && item?.folder_name && item.status !== 'wanted') {
+  $: if (onDrive && item?.folder_name && item.status !== 'wanted' && (isDesktopTauri || item.media_type === 'tv')) {
     const k = `${item.folder_name}:${item.episodes_json || ''}`;
     if (k !== extCheckedKey) {
       extCheckedKey = k;
@@ -289,10 +307,12 @@
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2H2v10l9.29 9.29c.94.94 2.48.94 3.42 0l6.58-6.58c.94-.94.94-2.48 0-3.42L12 2Z"/><path d="M7 7h.01"/></svg>
             </button>
 
-            {#if onDrive && item.status !== 'wanted'}
+            {#if isDesktopTauri && onDrive && item.status !== 'wanted'}
               <button type="button" class="icon-btn" on:click={openMovieFolder} title="Open folder in Finder" aria-label="Open folder">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
               </button>
+            {/if}
+            {#if onDrive && item.status !== 'wanted'}
               <button
                 type="button"
                 class="icon-btn"

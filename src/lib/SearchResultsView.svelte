@@ -63,6 +63,10 @@
   const imdbBase = ['https:/', '://imdb.com', 'title', ''].join('/');
   async function copyQuickImdb(key, imdbId) {
     if (!imdbId) return;
+    if (typeof window !== 'undefined' && !window.__TAURI_INTERNALS__) {
+      window.open(imdbBase + (typeof imdbId !== 'undefined' ? imdbId : arguments[1]), '_blank', 'noopener');
+      return;
+    }
     try {
       await navigator.clipboard.writeText(imdbBase + imdbId);
       copiedImdbKey = key;

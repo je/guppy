@@ -2415,6 +2415,22 @@ export async function playInVlc(folderName, specificFileName = '', isTv = false)
 }
 
 const videoExtCache = new Map();
+let activeExtRequests = 0;
+const extQueue = [];
+function enqueueExtTask(fn) {
+  return new Promise((resolve) => {
+    const run = () => {
+      activeExtRequests++;
+      fn().then(resolve).finally(() => {
+        activeExtRequests--;
+        const next = extQueue.shift();
+        if (next) next();
+      });
+    };
+    if (activeExtRequests < 4) run();
+    else extQueue.push(run);
+  });
+}
 export async function getPrimaryVideoExt(item) {
   if (!item?.folder_name) return '';
   if (item.media_type === 'tv' && item.episodes_json) {
@@ -2428,18 +2444,21 @@ export async function getPrimaryVideoExt(item) {
   }
   const cacheKey = `${item.media_type || 'movie'}:${item.folder_name}`;
   if (videoExtCache.has(cacheKey)) return videoExtCache.get(cacheKey);
-  try {
-    const root = getMediaRoot(item);
-    const files = await getMovieFolderFiles(item.folder_name, root);
+  return enqueueExtTask(async () => {
+    if (videoExtCache.has(cacheKey)) return videoExtCache.get(cacheKey);
+    try {
+      const root = getMediaRoot(item);
+      const files = await getMovieFolderFiles(item.folder_name, root);
     const vid = (Array.isArray(files) ? files : [])
       .filter(f => /\.(mp4|mkv|avi|mov|m4v|wmv|webm)$/i.test(f) && !/trailer|sample/i.test(f))
       .sort((a, b) => a.localeCompare(b))
       .at(0);
     const ext = vid ? vid.split('.').pop().toUpperCase() : '';
     videoExtCache.set(cacheKey, ext);
-    return ext;
-  } catch (_) {
-    return '';
-  }
+      return ext;
+    } catch (_) {
+      return '';
+    }
+  });
 }
 

@@ -521,6 +521,15 @@
 
   async function handleSaveTags(folderName, tags, clips) {
     await updateMovieTagsAndClips(folderName, tags, clips);
+    const hasAdult = String(tags || '').toLowerCase().split(',').map(s => s.trim()).includes('adult');
+    if (isRemote && hasAdult) {
+      databaseEntries = databaseEntries.filter(e => e.folder_name !== folderName);
+      if (activeMovie?.folder_name === folderName) activeMovie = null;
+    } else {
+      databaseEntries = databaseEntries.map(e =>
+        e.folder_name === folderName ? { ...e, tags, clips } : e
+      );
+    }
     await runAudit();
   }
 
@@ -562,7 +571,7 @@
 
   let watchFilter = 'all'; // 'all' | 'unseen' | 'liked' | 'disliked' | 'unfinished'
   let catalogTypeFilter = 'all';
-  let catalogCollectionFilter = 'all';
+  let catalogCollectionFilter = 'collected';
   let catalogSearchFilter = '';
   let confirmRewrite = false;
   let confirmRescan = false;
@@ -872,6 +881,7 @@
           type="text"
           placeholder="Search title, director, or cast…"
           bind:value={personQuery}
+          on:click={() => { if (personQuery) personQuery = ''; }}
         />
         <button type="submit" class="btn-secondary">Search</button>
       </form>

@@ -14,7 +14,7 @@
   export let onOpenMovie;
   export let typeFilter = 'all';
   export let searchFilter = '';
-  export let collectionFilter = 'all';
+  export let collectionFilter = 'collected';
 
   let layoutMode = 'cards';
   let sortBy = 'recent';
@@ -127,7 +127,7 @@
         <option value="year_asc">Year ↑</option>
       </select>
 
-      <input type="text" class="search-input" placeholder="Filter title, director, cast, tags, clips…" bind:value={searchFilter} />
+      <input type="text" class="search-input" placeholder="Filter title, director, cast, tags, clips…" bind:value={searchFilter} on:click={() => { if (searchFilter) searchFilter = ''; }} />
     </div>
   </div>
 
