@@ -2331,49 +2331,49 @@ export async function mountSharedDrive() {
 export async function playInVlc(folderName, specificFileName = '', isTv = false) {
   if (!folderName) return;
   try {
-  let rootDir = isTv ? TV_ROOT : THE_MOVIES_ROOT;
-  if (!isTv && !(await exists(`${rootDir}/${folderName}`).catch(() => false))) {
-    rootDir = MEDIA_ROOT;
-  }
-  const folderPath = `${rootDir}/${folderName}`;
-  let targetPath = '';
-
-  if (specificFileName) {
-    targetPath = `${folderPath}/${specificFileName}`;
-  } else {
-    const entries = await readDir(folderPath);
-    const videoFile = entries
-      .filter(e => {
-        if (!e.isFile) return false;
-        const lower = e.name.toLowerCase();
-        return VIDEO_EXTS.some(ext => lower.endsWith(ext)) && !/trailer|sample/i.test(lower);
-      })
-      .sort((a, b) => a.name.localeCompare(b.name))
-      .at(0);
-    if (!videoFile) {
-      throw new Error(`No video file found in ${folderName}`);
+    let rootDir = isTv ? TV_ROOT : THE_MOVIES_ROOT;
+    if (!isTv && !(await exists(`${rootDir}/${folderName}`).catch(() => false))) {
+      rootDir = MEDIA_ROOT;
     }
-    targetPath = `${folderPath}/${videoFile.name}`;
-  }
+    const folderPath = `${rootDir}/${folderName}`;
+    let targetPath = '';
 
-  if (typeof window !== 'undefined' && !window.__TAURI_INTERNALS__) {
-    const streamUrl = `${GUPPY_CONFIG.serverUrl}/stream?path=${encodeURIComponent(targetPath)}`;
-    const fileName = targetPath.split('/').pop() || folderName;
-    window.dispatchEvent(new CustomEvent('guppy:stream', { detail: { url: streamUrl, title: fileName } }));
-    return;
-  }
+    if (specificFileName) {
+      targetPath = `${folderPath}/${specificFileName}`;
+    } else {
+      const entries = await readDir(folderPath);
+      const videoFile = entries
+        .filter(e => {
+          if (!e.isFile) return false;
+          const lower = e.name.toLowerCase();
+          return VIDEO_EXTS.some(ext => lower.endsWith(ext)) && !/trailer|sample/i.test(lower);
+        })
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .at(0);
+      if (!videoFile) {
+        throw new Error(`No video file found in ${folderName}`);
+      }
+      targetPath = `${folderPath}/${videoFile.name}`;
+    }
 
-  targetPath = await resolveLocalMediaPath(targetPath);
+    if (typeof window !== 'undefined' && !window.__TAURI_INTERNALS__) {
+      const streamUrl = `${GUPPY_CONFIG.serverUrl}/stream?path=${encodeURIComponent(targetPath)}`;
+      const fileName = targetPath.split('/').pop() || folderName;
+      window.dispatchEvent(new CustomEvent('guppy:stream', { detail: { url: streamUrl, title: fileName } }));
+      return;
+    }
 
-  try {
-    await openPath(targetPath, 'VLC');
-  } catch (_) {
+    targetPath = await resolveLocalMediaPath(targetPath);
+
     try {
-      await openPath(targetPath);
-    } catch (err) {
-      alert(`Could not play video: ${err}`);
+      await openPath(targetPath, 'VLC');
+    } catch (_) {
+      try {
+        await openPath(targetPath);
+      } catch (err) {
+        alert(`Could not play video: ${err}`);
+      }
     }
-  }
   } catch (err) {
     alert(`Could not start playback: ${err?.message || err}`);
   }

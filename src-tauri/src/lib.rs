@@ -5,7 +5,7 @@ fn config_val(key: &str, fallback: &str) -> String {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix(key) {
             if let Some((_, val)) = rest.split_once(':') {
-                let clean = val.trim().trim_end_matches(',').trim_matches(|c| c == ''' || c == '"');
+                let clean = val.trim().trim_end_matches(',').trim_matches(|c| c == '\'' || c == '"');
                 if !clean.is_empty() && !clean.contains('$') {
                     return clean.to_string();
                 }
@@ -21,7 +21,7 @@ fn host_ip() -> String {
         if let Some(end) = slice.find(']') {
             let octets: Vec<&str> = slice[17..end]
                 .split(',')
-                .map(|s| s.trim().trim_matches(|c| c == ''' || c == '"'))
+                .map(|s| s.trim().trim_matches(|c| c == '\'' || c == '"'))
                 .filter(|s| !s.is_empty())
                 .collect();
             if octets.len() == 4 {
