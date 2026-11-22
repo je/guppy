@@ -538,8 +538,8 @@ export async function saveToLibrary(item, entry) {
     await rename(item.sourcePath, `${destFolder}/${item.name}`);
   }
   await db.execute(
-    `INSERT OR REPLACE INTO wishlist_videos (folder_name, title, year, quality, imdb_id, poster_url, director, cast_list, overview, watch_status, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'owned')`,
+    `INSERT OR REPLACE INTO wishlist_videos (folder_name, title, year, quality, imdb_id, poster_url, director, cast_list, overview, tags, clips, watch_status, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'owned')`,
     [
       cleanFolderName,
       entry.title.trim(),
@@ -550,6 +550,8 @@ export async function saveToLibrary(item, entry) {
       entry.director || "",
       entry.cast_list || "",
       entry.overview || "",
+      String(entry.tags || "").trim(),
+      String(entry.clips || "").trim(),
       entry.watch_status || ""
     ]
   );

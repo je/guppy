@@ -133,6 +133,7 @@
     : (data?.watch_status || '');
 
   let seasonPickerOpen = false;
+  let showImportTags = false;
 
   function handleTopWatchClick(status) {
     if (!isTv) {
@@ -183,6 +184,15 @@
         </div>
 
         <div class="icon-actions">
+          <button
+            type="button"
+            class="icon-btn"
+            on:click={() => showImportTags = !showImportTags}
+            title="Set Tags & Clips before importing"
+            aria-label="Set Tags & Clips"
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2H2v10l9.29 9.29c.94.94 2.48.94 3.42 0l6.58-6.58c.94-.94.94-2.48 0-3.42L12 2Z"/><path d="M7 7h.01"/></svg>
+          </button>
           {#if isTv && !seasonPickerOpen}
             <button
               type="button"
@@ -260,6 +270,15 @@
         </div>
 
       </div>
+
+      {#if showImportTags || data?.tags || data?.clips}
+        <div class="tag-editor" style="margin: 6px 0;">
+          <div class="tag-row">
+            <input type="text" placeholder="Tags before import (e.g. adult, noir, 4k)…" bind:value={data.tags} />
+            <input type="text" placeholder="Clips / scenes (optional)…" bind:value={data.clips} />
+          </div>
+        </div>
+      {/if}
 
       {#if data?.director || data?.cast_list}
         <div class="credits">
