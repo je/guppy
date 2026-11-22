@@ -219,7 +219,7 @@
   <section class="staged-section">
     <div class="section-bar">
       <h2>{activeHealthLabel} <span class="count">({activeHealthList.length})</span></h2>
-      <div style="display: flex; align-items: center; gap: 10px;">
+      <div class="g-st-133d27">
         {#if activeHealthFilter === 'sidecars' && missingSidecars.length > 0}
           <button
             type="button"

@@ -22,7 +22,6 @@
         { "url": "https://*.wikipedia.org/**" },
         { "url": "https://wikimedia.org/**" },
         { "url": "https://upload.wikimedia.org**" },
-        { "url": "http://nmm.local:3456/**" },
         { "url": "http://*:3456/**" }
       ]
     },

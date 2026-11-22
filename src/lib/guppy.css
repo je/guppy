@@ -574,8 +574,8 @@ header.app-header .header-right {
 .season-badges { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 .season-pill { display: inline-flex; align-items: center; gap: 4px; font-family: ui-monospace, monospace; font-size: 0.72rem; background: #fffff8; border-style: dashed; }
 .season-pill:hover { border-style: solid; border-color: #111; }
-.season-pill.season-wanted { background: #f3ead0; border-style: solid; border-color: #8a6d1b; color: #5c4810; cursor: default; }
-.season-pill.season-owned { background: #e8e5d8; border-style: solid; border-color: #111; color: #111; font-weight: 600; cursor: default; }
+.season-pill.season-wanted { background: #fffff8; border-style: solid; border-color: #111; color: #111; cursor: pointer; }
+.season-pill.season-owned { background: #eff6ff; border-style: solid; border-color: #1d4ed8; color: #1e3a8a; font-weight: 600; cursor: pointer; }
 .season-watch-dot { display: inline-flex; align-items: center; padding: 2px 4px; }
 .episode-top { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
 .ep-tax-form { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 6px; }
@@ -828,3 +828,46 @@ a:visited,
 .activity-title {
   color: #111;
 }
+
+
+/* Extracted utility styles */
+.g-st-3a883c { font-size: 0.75rem; margin: 0; }
+.g-st-43ae34 { width: 68px; }
+.g-st-d44c18 { width: 120px; }
+.g-st-ad95c7 { margin: 4px 0; }
+.g-st-bf6881 { background: #111; color: #fff; border-radius: 8px; padding: 12px; margin-bottom: 14px; }
+.g-st-b10f11 { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; font-size: 0.85rem; flex-wrap: wrap; }
+.g-st-d3348a { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.g-st-e9cd00 { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+.g-st-d79314 { color: #93c5fd; text-decoration: underline; font-size: 0.8rem; }
+.g-st-9bdeae { color: #d1d5db; text-decoration: underline; font-size: 0.8rem; }
+.g-st-b6ede6 { background: #7f1d1d; color: #fecaca; padding: 8px 10px; border-radius: 4px; font-size: 0.8rem; margin-bottom: 8px; }
+.g-st-77de87 { height: 24px; padding: 0 8px; font-size: 0.76rem; }
+.g-st-541143 { margin-left: 6px; vertical-align: middle; }
+.g-st-e3ec32 { margin-left: 6px; }
+.g-st-9b2237 { margin-left: auto; }
+.g-st-07c6a7 { margin-top: 4px; }
+.g-st-6599cf { text-align: left; }
+.g-st-b861c5 { margin-top: 28px; }
+.g-st-62766d { margin-top: 4px; display: flex; align-items: center; justify-content: space-between; width: 100%; }
+.g-st-42cb28 { padding: 0; border: none; background: none; cursor: pointer; }
+.g-st-c1cb70 { font-weight: bold; text-align: left; }
+.g-st-8800ba { justify-content: space-between; }
+.g-st-598951 { display: flex; align-items: center; gap: 8px; }
+.g-st-ca0ed0 { font-weight: normal; }
+.g-st-d4da31 { max-width: 68px; }
+.g-st-94debe { margin-top: 12px; justify-content: flex-end; }
+.g-st-133d27 { display: flex; align-items: center; gap: 10px; }
+.g-st-2dd1f7 { width: 72px; }
+.g-st-90f955 { width: 140px; }
+.g-st-7e5dde { width: 105px; }
+.g-st-d88c72 { margin-top: 10px; border-top: 1px solid #e2ddd2; padding-top: 8px; }
+.g-st-ecac07 { font-size: 0.78rem; font-weight: 600; margin-bottom: 6px; color: #555; }
+.g-st-f254cb { margin-top: 6px; }
+.g-st-063e42 { flex: 1; min-width: 180px; }
+.g-st-be70d9 { width: 100%; }
+.g-st-6a0b66 { display: flex; align-items: center; gap: 12px; font-size: 0.78rem; padding: 6px 10px; margin-bottom: 8px; border-bottom: 1px solid #e2ddd2; color: #444; }
+.g-st-ab0b11 { padding: 2px 8px; font-size: 0.74rem; }
+.g-st-d0e0dd { margin-left: auto; font-size: 0.74rem; }
+.g-st-1c244e { margin: 0; }
+.g-st-678404 { display: inline-flex; align-items: center; gap: 6px; }

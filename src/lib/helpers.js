@@ -1,8 +1,8 @@
 import { readDir } from '@tauri-apps/plugin-fs';
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
 
-export const MEDIA_ROOT = "/Volumes/4TB0-SEAGATE/jelly/art-films";
-export const THE_MOVIES_ROOT = "/Volumes/4TB0-SEAGATE/jelly/the-movies";
+export const MEDIA_ROOT = GUPPY_CONFIG.artFilmsRoot;
+export const THE_MOVIES_ROOT = GUPPY_CONFIG.theMoviesRoot;
 import { GUPPY_CONFIG } from '$lib/guppyConfig.js';
 export const TMDB_API_KEY = GUPPY_CONFIG.tmdbApiKey;
 export const VIDEO_EXTS = ['.mp4', '.mkv', '.avi', '.mov', '.m4v', '.wmv', '.webm'];

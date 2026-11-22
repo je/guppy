@@ -285,7 +285,7 @@
 
 <section class="bulk-box">
   <div class="section-bar">
-    <h2>Bulk Add to Wanted List</h2>
+    <h2>Bulk Add to Not Available List</h2>
     <div class="bar-links">
       {#if rows.length > 0}
         <button class="btn-text" on:click={() => { rows = []; rawText = ''; }}>Clear</button>
@@ -308,7 +308,7 @@ Better Call Saul Season 6 | drama"
     bind:value={rawText}
   ></textarea>
 
-  <div class="toolbar" style="justify-content: space-between;">
+  <div class="toolbar g-st-8800ba">
       <div class="filter-tabs" title="Default media type for lines without a season number">
         <button type="button" class:active={defaultMediaType === 'auto'} on:click={() => defaultMediaType = 'auto'}>
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
@@ -327,7 +327,7 @@ Better Call Saul Season 6 | drama"
       {running ? 'Looking up…' : 'Lookup All'}
     </button>
 
-    <div style="display: flex; align-items: center; gap: 8px;">
+    <div class="g-st-598951">
       <span class="watch-triad" title="Default watch status for batch">
         <button
           type="button"
@@ -377,7 +377,7 @@ Better Call Saul Season 6 | drama"
         disabled={saving || running || matchedCount === 0}
         on:click={commitSelected}
       >
-        {saving ? 'Saving…' : `Add ${matchedCount} Matched to Wanted`}
+        {saving ? 'Saving…' : `Add ${matchedCount} Matched to Not Available`}
       </button>
     </div>
   </div>
@@ -413,7 +413,7 @@ Better Call Saul Season 6 | drama"
               {#if sel}
                 <span>
                   {sel.title}{sel.season_number ? ` · Season ${sel.season_number}` : ''}
-                  <span class="mono" style="font-weight: normal;">({sel.release_date?.slice(0, 4) || 'n.d.'})</span>
+                  <span class="mono g-st-ca0ed0">({sel.release_date?.slice(0, 4) || 'n.d.'})</span>
                 </span>
               {:else}
                 <span>{row.title}{row.year ? ` (${row.year})` : ''}</span>
@@ -421,14 +421,14 @@ Better Call Saul Season 6 | drama"
 
               {#if ex}
                 {#if ex.status === 'wanted'}
-                  <span class="tag tag-wanted" style="margin-left: 6px;">Already Wanted</span>
+                  <span class="tag tag-wanted g-st-e3ec32">Already Not Available</span>
                 {:else if diskFolders.includes(ex.folder_name)}
-                  <span class="tag" style="margin-left: 6px;">Already Logged{ex.quality ? ` · ${ex.quality}` : ''}</span>
+                  <span class="tag g-st-e3ec32">Already Logged{ex.quality ? ` · ${ex.quality}` : ''}</span>
                 {:else}
-                  <span class="tag tag-missing" style="margin-left: 6px;">Already Logged (Missing)</span>
+                  <span class="tag tag-missing g-st-e3ec32">Already Logged (Missing)</span>
                 {/if}
               {:else if mismatchNote}
-                <span class="tag tag-wanted" style="margin-left: 6px;">{mismatchNote}</span>
+                <span class="tag tag-wanted g-st-e3ec32">{mismatchNote}</span>
               {/if}
             </div>
 
@@ -457,10 +457,10 @@ Better Call Saul Season 6 | drama"
                   placeholder="Title or tt1234567"
                   bind:value={rows[i].draftTitle}
                 />
-                <input
+                <input class="g-st-d4da31"
                   type="text"
                   placeholder="Year"
-                  style="max-width: 68px;"
+                 
                   bind:value={rows[i].draftYear}
                 />
                 <input
@@ -601,14 +601,14 @@ Better Call Saul Season 6 | drama"
     </div>
 
     {#if rows.length > 0}
-      <div class="toolbar" style="margin-top: 12px; justify-content: flex-end;">
+      <div class="toolbar g-st-94debe">
         <button
           type="button"
           class="btn-primary"
           disabled={saving || running || matchedCount === 0}
           on:click={commitSelected}
         >
-          {saving ? 'Saving…' : `Add ${matchedCount} Matched to Wanted`}
+          {saving ? 'Saving…' : `Add ${matchedCount} Matched to Not Available`}
         </button>
       </div>
     {/if}

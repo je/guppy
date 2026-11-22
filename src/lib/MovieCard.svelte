@@ -175,9 +175,9 @@
           {item.isDirectory ? 'Folder' : 'File'}: <code>{item.name}</code>
           {#if isTv && existingSeason}
             {#if existingSeason.status === 'wanted'}
-              <span class="tag tag-wanted" style="margin-left: 6px;">Season Wanted in Library</span>
+              <span class="tag tag-wanted g-st-e3ec32">Season Wanted in Library</span>
             {:else}
-              <span class="tag" style="margin-left: 6px;">Season Already Logged</span>
+              <span class="tag g-st-e3ec32">Season Already Logged</span>
             {/if}
           {/if}
         </div>
@@ -301,19 +301,19 @@
         <input type="text" placeholder={data.media_type === 'tv' ? 'Show Title' : 'Title'} bind:value={data.title} />
 
         {#if data.media_type === 'tv'}
-          <input
+          <input class="g-st-43ae34"
             type="number"
             min="1"
             placeholder="Season"
-            style="width: 68px;"
+           
             bind:value={data.season_number}
             title="Season number"
           />
         {/if}
 
-        <input type="number" placeholder="Year" style="width: 72px;" bind:value={data.year} />
-        <input type="text" placeholder="Director" style="width: 140px;" bind:value={data.director} />
-        <input type="text" placeholder="Quality" style="width: 105px;" bind:value={data.quality} />
+        <input class="g-st-2dd1f7" type="number" placeholder="Year" bind:value={data.year} />
+        <input class="g-st-90f955" type="text" placeholder="Director" bind:value={data.director} />
+        <input class="g-st-7e5dde" type="text" placeholder="Quality" bind:value={data.quality} />
         <button class="btn-secondary" on:click={onLookup}>{loading ? 'Searching…' : 'Lookup'}</button>
         <button class="btn-secondary" on:click={onWikiLookup} title="Search Wikipedia">Wiki</button>
       </div>
@@ -325,8 +325,8 @@
   </div>
 
   {#if isTv && seasonEpisodes.length > 0}
-    <div class="sub-block" style="margin-top: 10px; border-top: 1px solid #e2ddd2; padding-top: 8px;">
-      <div style="font-size: 0.78rem; font-weight: 600; margin-bottom: 6px; color: #555;">
+    <div class="sub-block g-st-d88c72">
+      <div class="g-st-ecac07">
         Episodes ({newImportableCount} new to import · {matchedSeasonEpisodes.length} of {seasonEpisodes.length} in folder)
       </div>
       <div class="episode-list">
@@ -343,13 +343,13 @@
                 <span class="mono">S{String(seasonNum).padStart(2, '0')}E{String(epNum).padStart(2, '0')}</span>
                 <strong>{ep.name}</strong>
                 {#if alreadyOwned && inc}
-                  <span class="tag tag-missing" style="margin-left: 6px;" title="Already on drive as {dbEp.file_name}">Already Owned · Duplicate</span>
+                  <span class="tag tag-missing g-st-e3ec32" title="Already on drive as {dbEp.file_name}">Already Owned · Duplicate</span>
                 {:else if alreadyOwned}
-                  <span class="tag" style="margin-left: 6px;" title="On drive as {dbEp.file_name}">Already Owned</span>
+                  <span class="tag g-st-e3ec32" title="On drive as {dbEp.file_name}">Already Owned</span>
                 {:else if inc}
-                  <span class="tag" style="margin-left: 6px;" title={inc.file_name}>New · {epQual || 'Matched'}</span>
+                  <span class="tag g-st-e3ec32" title={inc.file_name}>New · {epQual || 'Matched'}</span>
                 {:else}
-                  <span class="tag tag-wanted" style="margin-left: 6px;">Missing</span>
+                  <span class="tag tag-wanted g-st-e3ec32">Missing</span>
                 {/if}
               </div>
 
@@ -439,7 +439,7 @@
               <span class="mono">({match.release_date?.slice(0, 4) || 'n.d.'})</span>
             </div>
             {#if match.media_type === 'tv' && match.seasons?.length > 0}
-              <div class="season-badges" style="margin: 4px 0;">
+              <div class="season-badges g-st-ad95c7">
                 {#each match.seasons as sNum}
                   <button
                     type="button"
@@ -479,12 +479,12 @@
       {:else}
         <div class="manual-meta-box">
           <div class="empty-note">No matches returned. Fill in optional details below and click a status dot above to log manually:</div>
-          <div class="controls" style="margin-top: 6px;">
-            <input type="text" placeholder="Cast (comma-separated)" style="flex: 1; min-width: 180px;" bind:value={data.cast_list} />
-            <input type="text" placeholder="Poster URL (optional)" style="flex: 1; min-width: 180px;" bind:value={data.poster_url} />
+          <div class="controls g-st-f254cb">
+            <input class="g-st-063e42" type="text" placeholder="Cast (comma-separated)" bind:value={data.cast_list} />
+            <input class="g-st-063e42" type="text" placeholder="Poster URL (optional)" bind:value={data.poster_url} />
           </div>
-          <div class="controls" style="margin-top: 6px;">
-            <input type="text" placeholder="Synopsis / Overview (optional)" style="width: 100%;" bind:value={data.overview} />
+          <div class="controls g-st-f254cb">
+            <input class="g-st-be70d9" type="text" placeholder="Synopsis / Overview (optional)" bind:value={data.overview} />
           </div>
         </div>
       {/each}

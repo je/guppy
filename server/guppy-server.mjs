@@ -6,8 +6,21 @@ import { DatabaseSync } from 'node:sqlite';
 
 const PORT = Number(process.env.GUPPY_PORT || 3456);
 const DB_PATH = path.join(process.env.HOME || '/Users/je', 'Library/Application Support/com.je.guppy/local_media.db');
-const ALLOWED_ROOTS = ['/Volumes/4TB0-SEAGATE'];
-const ART_FILMS_ROOT = '/Volumes/4TB0-SEAGATE/jelly/art-films';
+const cfgCandidates = [
+  new URL('../src/lib/guppyConfig.js', import.meta.url).pathname,
+  path.join(process.env.HOME || '/Users/je', 'guppy/src/lib/guppyConfig.js')
+];
+const cfgPath = cfgCandidates.find(p => fsSync.existsSync(p));
+const { GUPPY_CONFIG } = cfgPath ? await import(cfgPath) : {
+  GUPPY_CONFIG: {
+    hostDriveRoot: '/Volumes/4TB0-SEAGATE',
+    hostJellyRoot: '/Volumes/4TB0-SEAGATE/jelly',
+    artFilmsRoot: '/Volumes/4TB0-SEAGATE/jelly/art-films',
+    localShareMount: '/Volumes/jelly'
+  }
+};
+const ALLOWED_ROOTS = [GUPPY_CONFIG.hostDriveRoot];
+const ART_FILMS_ROOT = GUPPY_CONFIG.artFilmsRoot;
 const LOCAL_BUILD = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../build');
 const STATIC_DIR = fsSync.existsSync(LOCAL_BUILD) ? LOCAL_BUILD : '/Users/je/guppy/build';
 const MIME_TYPES = {
@@ -220,8 +233,9 @@ const server = http.createServer(async (req, res) => {
     if ((req.method === 'GET' || req.method === 'HEAD') && req.url.startsWith('/stream')) {
       const u = new URL(req.url, 'http://localhost');
       const reqPath = u.searchParams.get('path') || '';
-      const mapped = reqPath.startsWith('/Volumes/jelly/')
-        ? '/Volumes/4TB0-SEAGATE/jelly/' + reqPath.slice('/Volumes/jelly/'.length)
+      const sharePrefix = `${GUPPY_CONFIG.localShareMount}/`;
+      const mapped = reqPath.startsWith(sharePrefix)
+        ? `${GUPPY_CONFIG.hostJellyRoot}/` + reqPath.slice(sharePrefix.length)
         : reqPath;
       const safeFile = assertSafePath(mapped, true);
       const stat = fsSync.statSync(safeFile);

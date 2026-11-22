@@ -1,4 +1,5 @@
 <script>
+  import { getPrimaryVideoExt } from '$lib/guppyStore.js';
   import { revealItemInDir, openPath } from '@tauri-apps/plugin-opener';
   import { getMediaRoot, fetchMovieKeywords, computeSeasonWatchStatus, playInVlc, resolveLocalMediaPath } from '$lib/guppyStore.js';
   export let item;
@@ -133,10 +134,36 @@
   $: tagList = (item.tags || '').split(',').map(s => s.trim()).filter(Boolean);
   $: clipList = (item.clips || '').split(',').map(s => s.trim()).filter(Boolean);
 
+  $: tvEpisodeCounts = (() => {
+    if (item?.media_type !== 'tv' || !item?.episodes_json) return { owned: 0, total: 0 };
+    try {
+      const eps = JSON.parse(item.episodes_json);
+      if (!Array.isArray(eps)) return { owned: 0, total: 0 };
+      return { owned: eps.filter(e => Boolean(e.file_name)).length, total: eps.length };
+    } catch (_) {
+      return { owned: 0, total: 0 };
+    }
+  })();
+  $: isIncompleteSeason = item?.media_type === 'tv' && tvEpisodeCounts.owned > 0 && (item?.status === 'wanted' || tvEpisodeCounts.owned < tvEpisodeCounts.total);
+  $: fileExt = '';
+  let extCheckedKey = '';
+  $: if (onDrive && item?.folder_name && item.status !== 'wanted') {
+    const k = `${item.folder_name}:${item.episodes_json || ''}`;
+    if (k !== extCheckedKey) {
+      extCheckedKey = k;
+      getPrimaryVideoExt(item).then(ext => { fileExt = ext; });
+    }
+  } else {
+    fileExt = '';
+  }
+
   $: displayQuality = (() => {
     const ownQual = extractCardQuality(item);
-    if (ownQual) return ownQual;
-    return onDrive && item.status !== 'wanted' ? '???' : '';
+    if (onDrive && item.status !== 'wanted') {
+      const base = ownQual || '???';
+      return fileExt ? `${base} ${fileExt}` : base;
+    }
+    return ownQual;
   })();
 </script>
 
@@ -157,8 +184,10 @@
       {:else}
         <div class="poster-tile-blank">{item.title}</div>
       {/if}
-      {#if item.status === 'wanted'}
-        <span class="tile-badge tag-wanted">Wanted</span>
+      {#if isIncompleteSeason}
+        <span class="tile-badge tag-wanted">Incomplete</span>
+      {:else if item.status === 'wanted'}
+        <span class="tile-badge tag-wanted">Not Available</span>
       {:else if !onDrive}
         <span class="tile-badge tag-missing">Missing</span>
       {:else if displayQuality && displayQuality !== '???'}
@@ -218,8 +247,10 @@
         </div>
 
         <div class="badge-action-row">
-          {#if item.status === 'wanted'}
-            <span class="tag tag-wanted">Wanted</span>
+          {#if isIncompleteSeason}
+            <span class="tag tag-wanted">Incomplete</span>
+          {:else if item.status === 'wanted'}
+            <span class="tag tag-wanted">Not Available</span>
           {:else if !onDrive}
             <span class="tag tag-missing">Missing</span>
           {:else if displayQuality}
@@ -362,7 +393,7 @@
             <input type="text" placeholder="Tags (comma-separated: noir, space opera)" bind:value={draftTags} />
 
             {#if loadingTags}
-              <div class="muted" style="font-size: 0.75rem; margin: 0;">Loading TMDb tags…</div>
+              <div class="muted g-st-3a883c">Loading TMDb tags…</div>
             {:else if suggestedTags.length > 0}
               <div class="suggest-row">
                 <span class="tax-label">TMDb:</span>
@@ -396,8 +427,8 @@
     {#if showLookupBox}
       <form class="relookup-bar" on:submit|preventDefault={() => onLookup?.(queryTitle, queryYear, queryDirector, queryMediaType)}>
         <input type="text" placeholder="Title" bind:value={queryTitle} />
-        <input type="number" placeholder="Year" style="width: 68px;" bind:value={queryYear} />
-        <input type="text" placeholder="Director" style="width: 120px;" bind:value={queryDirector} />
+        <input class="g-st-43ae34" type="number" placeholder="Year" bind:value={queryYear} />
+        <input class="g-st-d44c18" type="text" placeholder="Director" bind:value={queryDirector} />
         <button
           type="button"
           class="btn-secondary"
@@ -436,7 +467,7 @@
                 <span class="mono">({match.release_date?.slice(0, 4) || 'n.d.'})</span>
               </div>
               {#if match.media_type === 'tv' && match.seasons?.length > 0}
-                <div class="season-badges" style="margin: 4px 0;">
+                <div class="season-badges g-st-ad95c7">
                   {#each match.seasons as sNum}
                     <button
                       type="button"

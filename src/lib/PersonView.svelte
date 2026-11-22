@@ -98,6 +98,26 @@
     );
   }
 
+  let copiedImdbId = '';
+  const imdbBase = ['https:/', '://imdb.com', 'title', ''].join('/');
+  async function copyPersonFilmImdb(imdbId) {
+    if (!imdbId) return;
+    try {
+      await navigator.clipboard.writeText(imdbBase + imdbId);
+      copiedImdbId = imdbId;
+      setTimeout(() => { if (copiedImdbId === imdbId) copiedImdbId = ''; }, 1800);
+    } catch (_) {}
+  }
+
+  function hasSeasonFiles(sMatch) {
+    if (!sMatch || sMatch.status === 'wanted' && !sMatch.episodes_json) return false;
+    try {
+      const eps = JSON.parse(sMatch.episodes_json || '[]');
+      if (Array.isArray(eps) && eps.length > 0) return eps.some(e => Boolean(e.file_name));
+    } catch (_) {}
+    return sMatch.status !== 'wanted';
+  }
+
   function getSeasonStatus(sMatch) {
     if (!sMatch) return '';
     try {
@@ -120,12 +140,12 @@
 
   function getCatalogStatus(movie, entries, addedSet, removedSet) {
     if (removedSet.has(movie.id)) return null;
-    if (addedSet.has(movie.id)) return 'Wanted';
+    if (addedSet.has(movie.id)) return 'Not Available';
 
     const matches = getCatalogMatch(movie, entries);
     if (matches.length === 0) return null;
 
-    if (matches.every(m => m.status === 'wanted')) return 'Wanted';
+    if (matches.every(m => m.status === 'wanted')) return 'Not Available';
 
     const owned = matches.filter(m => m.status !== 'wanted');
     const missingAll = owned.every(m => !diskFolders.includes(m.folder_name));
@@ -210,30 +230,61 @@
                 </button>
                 <div class="meta-col">
                   <div class="title-line">
-                    <button type="button" class="person-link title" style="text-align: left;" on:click={() => onOpenMovie?.(film)}>{film.title}</button>
+                    <button type="button" class="person-link title g-st-6599cf" on:click={() => onOpenMovie?.(film)}>{film.title}</button>
                     <span class="mono">({film.year || 'n.d.'})</span>
                   </div>
-                  <div class="badge-action-row" style="margin-top: 4px; display: flex; align-items: center; justify-content: space-between; width: 100%;">
+                  <div class="badge-action-row g-st-62766d">
                     <div>
-                      {#if isPendingWanted}<span class="tag tag-wanted">Wanted</span>{/if}
+                      {#if isPendingWanted}<span class="tag tag-wanted">Not Available</span>{:else}<span class="tag tag-wanted">Not in Catalog</span>{/if}
                     </div>
-                    <div class="icon-actions" style="margin-left: auto;">
+                    <div class="icon-actions g-st-9b2237">
+                      {#if film.imdb_id && copiedImdbId === film.imdb_id}<span class="copied-note">Copied</span>{/if}
+                      {#if film.imdb_id}
+                        <button
+                          type="button"
+                          class="icon-btn"
+                          on:click|stopPropagation={() => copyPersonFilmImdb(film.imdb_id)}
+                          title="Copy IMDb link ({imdbBase + film.imdb_id})"
+                          aria-label="Copy IMDb link"
+                        >
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                        </button>
+                      {/if}
                       <span class="watch-triad">
-                        <button type="button" class="icon-btn" class:active-watch={isPendingWanted && curWatch === ''} on:click|stopPropagation={() => handleDotAction(film, '', personData.name)} title="Add to Wanted as Unseen" aria-label="Unseen">
+                        <button type="button" class="icon-btn" class:active-watch={isPendingWanted && curWatch === ''} on:click|stopPropagation={() => handleDotAction(film, '', personData.name)} title="Add to Not Available as Unseen" aria-label="Unseen">
                           <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.5" fill="#fffff8" stroke="#111" stroke-width="1.5" /></svg>
                         </button>
-                        <button type="button" class="icon-btn" on:click|stopPropagation={() => handleDotAction(film, 'liked', personData.name)} title="Add to Wanted as Seen & Liked" aria-label="Seen and Liked">
+                        <button type="button" class="icon-btn" on:click|stopPropagation={() => handleDotAction(film, 'liked', personData.name)} title="Add to Not Available as Seen & Liked" aria-label="Seen and Liked">
                           <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#2b7a3d" /></svg>
                         </button>
-                        <button type="button" class="icon-btn" on:click|stopPropagation={() => handleDotAction(film, 'unfinished', personData.name)} title="Add to Wanted as Unfinished" aria-label="Unfinished">
+                        <button type="button" class="icon-btn" on:click|stopPropagation={() => handleDotAction(film, 'unfinished', personData.name)} title="Add to Not Available as Unfinished" aria-label="Unfinished">
                           <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#8a8578" /></svg>
                         </button>
-                        <button type="button" class="icon-btn" on:click|stopPropagation={() => handleDotAction(film, 'disliked', personData.name)} title="Add to Wanted as Seen & Disliked" aria-label="Seen and Disliked">
+                        <button type="button" class="icon-btn" on:click|stopPropagation={() => handleDotAction(film, 'disliked', personData.name)} title="Add to Not Available as Seen & Disliked" aria-label="Seen and Disliked">
                           <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#9e2a2b" /></svg>
                         </button>
                       </span>
                     </div>
                   </div>
+                  {#if film.director || film.cast_list}
+                    {@const topActors = (film.cast_list || '').split(',').map(s => s.trim()).filter(Boolean).slice(0, 4)}
+                    <div class="credits">
+                      {#if film.director}
+                        <span>Dir. </span>
+                        {#each film.director.split(',').map(s => s.trim()).filter(Boolean) as dir, i}
+                          {#if i > 0}, {/if}
+                          <button type="button" class="person-link" on:click|stopPropagation={() => onPersonClick?.(dir)}>{dir}</button>
+                        {/each}
+                      {/if}
+                      {#if film.director && topActors.length > 0} · {/if}
+                      {#if topActors.length > 0}
+                        {#each topActors as actor, i}
+                          {#if i > 0}, {/if}
+                          <button type="button" class="person-link" on:click|stopPropagation={() => onPersonClick?.(actor)}>{actor}</button>
+                        {/each}
+                      {/if}
+                    </div>
+                  {/if}
                   {#if film.overview}<p class="synopsis">{film.overview}</p>{/if}
                 </div>
               </div>
@@ -278,30 +329,61 @@
                 </button>
                 <div class="meta-col">
                   <div class="title-line">
-                    <button type="button" class="person-link title" style="text-align: left;" on:click={() => onOpenMovie?.(film)}>{film.title}</button>
+                    <button type="button" class="person-link title g-st-6599cf" on:click={() => onOpenMovie?.(film)}>{film.title}</button>
                     <span class="mono">({film.year || 'n.d.'})</span>
                   </div>
-                  <div class="badge-action-row" style="margin-top: 4px; display: flex; align-items: center; justify-content: space-between; width: 100%;">
+                  <div class="badge-action-row g-st-62766d">
                     <div>
-                      {#if isPendingWanted}<span class="tag tag-wanted">Wanted</span>{/if}
+                      {#if isPendingWanted}<span class="tag tag-wanted">Not Available</span>{:else}<span class="tag tag-wanted">Not in Catalog</span>{/if}
                     </div>
-                    <div class="icon-actions" style="margin-left: auto;">
+                    <div class="icon-actions g-st-9b2237">
+                      {#if film.imdb_id && copiedImdbId === film.imdb_id}<span class="copied-note">Copied</span>{/if}
+                      {#if film.imdb_id}
+                        <button
+                          type="button"
+                          class="icon-btn"
+                          on:click|stopPropagation={() => copyPersonFilmImdb(film.imdb_id)}
+                          title="Copy IMDb link ({imdbBase + film.imdb_id})"
+                          aria-label="Copy IMDb link"
+                        >
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                        </button>
+                      {/if}
                       <span class="watch-triad">
-                        <button type="button" class="icon-btn" class:active-watch={isPendingWanted && curWatch === ''} on:click|stopPropagation={() => handleDotAction(film, '', '')} title="Add to Wanted as Unseen" aria-label="Unseen">
+                        <button type="button" class="icon-btn" class:active-watch={isPendingWanted && curWatch === ''} on:click|stopPropagation={() => handleDotAction(film, '', '')} title="Add to Not Available as Unseen" aria-label="Unseen">
                           <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.5" fill="#fffff8" stroke="#111" stroke-width="1.5" /></svg>
                         </button>
-                        <button type="button" class="icon-btn" on:click|stopPropagation={() => handleDotAction(film, 'liked', '')} title="Add to Wanted as Seen & Liked" aria-label="Seen and Liked">
+                        <button type="button" class="icon-btn" on:click|stopPropagation={() => handleDotAction(film, 'liked', '')} title="Add to Not Available as Seen & Liked" aria-label="Seen and Liked">
                           <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#2b7a3d" /></svg>
                         </button>
-                        <button type="button" class="icon-btn" on:click|stopPropagation={() => handleDotAction(film, 'unfinished', '')} title="Add to Wanted as Unfinished" aria-label="Unfinished">
+                        <button type="button" class="icon-btn" on:click|stopPropagation={() => handleDotAction(film, 'unfinished', '')} title="Add to Not Available as Unfinished" aria-label="Unfinished">
                           <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#8a8578" /></svg>
                         </button>
-                        <button type="button" class="icon-btn" on:click|stopPropagation={() => handleDotAction(film, 'disliked', '')} title="Add to Wanted as Seen & Disliked" aria-label="Seen and Disliked">
+                        <button type="button" class="icon-btn" on:click|stopPropagation={() => handleDotAction(film, 'disliked', '')} title="Add to Not Available as Seen & Disliked" aria-label="Seen and Disliked">
                           <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#9e2a2b" /></svg>
                         </button>
                       </span>
                     </div>
                   </div>
+                  {#if film.director || film.cast_list}
+                    {@const topActors = (film.cast_list || '').split(',').map(s => s.trim()).filter(Boolean).slice(0, 4)}
+                    <div class="credits">
+                      {#if film.director}
+                        <span>Dir. </span>
+                        {#each film.director.split(',').map(s => s.trim()).filter(Boolean) as dir, i}
+                          {#if i > 0}, {/if}
+                          <button type="button" class="person-link" on:click|stopPropagation={() => onPersonClick?.(dir)}>{dir}</button>
+                        {/each}
+                      {/if}
+                      {#if film.director && topActors.length > 0} · {/if}
+                      {#if topActors.length > 0}
+                        {#each topActors as actor, i}
+                          {#if i > 0}, {/if}
+                          <button type="button" class="person-link" on:click|stopPropagation={() => onPersonClick?.(actor)}>{actor}</button>
+                        {/each}
+                      {/if}
+                    </div>
+                  {/if}
                   {#if film.overview}<p class="synopsis">{film.overview}</p>{/if}
                 </div>
               </div>
@@ -313,14 +395,14 @@
 
   {/if}
      {#if personData.tvShows?.length > 0}
-      <h3 style="margin-top: 28px;">{personData.tvShows.length} TV Shows with {personData.name}</h3>
+      <h3 class="g-st-b861c5">{personData.tvShows.length} TV Shows with {personData.name}</h3>
       <div class="film-grid">
         {#each personData.tvShows as show (show.id)}
           <article class="film-card">
             <button
               type="button"
-              class="poster-btn"
-              style="padding: 0; border: none; background: none; cursor: pointer;"
+              class="poster-btn g-st-42cb28"
+             
               on:click={() => {
                 const s1 = findSeasonMatch(show, 1, databaseEntries);
                 onOpenMovie?.(s1 || { ...show, tmdb_id: show.id, media_type: 'tv', season_number: 1 });
@@ -342,8 +424,8 @@
                 <div class="title-left">
                   <button
                     type="button"
-                    class="person-link"
-                    style="font-weight: bold; text-align: left;"
+                    class="person-link g-st-c1cb70"
+                   
                     on:click={() => {
                       const s1 = findSeasonMatch(show, 1, databaseEntries);
                       onOpenMovie?.(s1 || { ...show, tmdb_id: show.id, media_type: 'tv', season_number: 1 });
@@ -352,11 +434,10 @@
                 </div>
               </div>
 
-              {#if show.role}
-                <div class="credits">{show.role}</div>
+              {#if !(show.seasons || Array.of(1)).some(s => Boolean(findSeasonMatch(show, s, databaseEntries)))}
+                <div class="g-st-ad95c7"><span class="tag tag-wanted">Not in Catalog</span></div>
               {/if}
-
-              <div class="season-badges" style="margin: 4px 0;">
+              <div class="season-badges g-st-ad95c7">
                 {#each (show.seasons || Array.of(1)) as sNum}
                   {@const sMatch = findSeasonMatch(show, sNum, databaseEntries)}
                   {@const sLabel = `S${String(sNum).padStart(2, '0')}`}
@@ -364,10 +445,10 @@
                   <button
                     type="button"
                     class="tax-pill season-pill"
-                    class:season-owned={sMatch && sMatch.status !== 'wanted'}
-                    class:season-wanted={sMatch?.status === 'wanted'}
+                    class:season-owned={hasSeasonFiles(sMatch)}
+                    class:season-wanted={sMatch && !hasSeasonFiles(sMatch)}
                     title={sMatch
-                      ? `Open ${show.title} ${sLabel} (${sMatch.status === 'wanted' ? 'Wanted' : 'On Drive'} · ${sWatch || 'Unseen'})`
+                      ? `Open ${show.title} ${sLabel} (${sMatch.status === 'wanted' ? 'Not Available' : 'On Drive'} · ${sWatch || 'Unseen'})`
                       : `Open ${show.title} ${sLabel} details`}
                     on:click={() => onOpenMovie?.(sMatch || { ...show, tmdb_id: show.id, media_type: 'tv', season_number: Number(sNum) || 1 })}
                   >

@@ -20,6 +20,20 @@
 
   let extra = null;
   let files = [];
+  $: mainVideoFile = (Array.isArray(files) ? files : [])
+    .filter(f => /\.(mp4|mkv|avi|mov|m4v|wmv|webm)$/i.test(f) && !/trailer|sample/i.test(f))
+    .sort((a, b) => a.localeCompare(b))
+    .at(0) || '';
+  $: tvFallbackExt = (() => {
+    const owned = (Array.isArray(episodesList) ? episodesList : []).find(e => e.file_name);
+    return owned?.file_name && owned.file_name.includes('.') ? owned.file_name.split('.').pop().toUpperCase() : '';
+  })();
+  $: videoExt = mainVideoFile ? mainVideoFile.split('.').pop().toUpperCase() : tvFallbackExt;
+  $: detailQualityBadge = (() => {
+    const base = movie?.quality?.trim() || (onDrive && movie?.status !== 'wanted' ? '???' : '');
+    if (!base) return '';
+    return videoExt ? `${base} ${videoExt}` : base;
+  })();
   let suggestedTags = [];
   let loadingExtra = true;
   let draftTags = movie.tags || '';
@@ -216,19 +230,19 @@
 
 <section class="detail-page">
   {#if activeStream}
-    <div style="background: #111; color: #fff; border-radius: 8px; padding: 12px; margin-bottom: 14px;">
-      <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; font-size: 0.85rem; flex-wrap: wrap;">
-        <strong style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;">{activeStream.title}</strong>
-        <div style="display: flex; align-items: center; gap: 12px; flex-shrink: 0;">
-          <a
+    <div class="g-st-bf6881">
+      <div class="g-st-b10f11">
+        <strong class="g-st-d3348a">{activeStream.title}</strong>
+        <div class="g-st-e9cd00">
+          <a class="g-st-d79314"
             href={`vlc-x-callback://x-callback-url/stream?url=${encodeURIComponent(activeStream.url)}`}
-            style="color: #93c5fd; text-decoration: underline; font-size: 0.8rem;"
+           
           >Open in VLC</a>
-          <a
+          <a class="g-st-9bdeae"
             href={activeStream.url}
             target="_blank"
             rel="noopener"
-            style="color: #d1d5db; text-decoration: underline; font-size: 0.8rem;"
+           
           >Direct Stream</a>
           <button
             type="button"
@@ -238,7 +252,7 @@
         </div>
       </div>
       {#if streamError}
-        <div style="background: #7f1d1d; color: #fecaca; padding: 8px 10px; border-radius: 4px; font-size: 0.8rem; margin-bottom: 8px;">
+        <div class="g-st-b6ede6">
           {streamError}
         </div>
       {/if}
@@ -265,13 +279,15 @@
       {/if}
 
       {#if !movie.folder_name}
-        <span class="tag tag-wanted">Not in Library</span>
+        <span class="tag tag-wanted">Not in Catalog</span>
+      {:else if movie.media_type === 'tv' && ownedEpCount > 0 && (movie.status === 'wanted' || ownedEpCount < episodesList.length)}
+        <span class="tag tag-wanted">Incomplete</span>
       {:else if movie.status === 'wanted'}
-        <span class="tag tag-wanted">Wanted</span>
+        <span class="tag tag-wanted">Not Available</span>
       {:else if !onDrive}
         <span class="tag tag-missing">Missing</span>
-      {:else if movie.quality}
-        <span class="tag">{movie.quality}</span>
+      {:else if detailQualityBadge}
+        <span class="tag" title={mainVideoFile || ''}>{detailQualityBadge}</span>
       {/if}
 
       {#if movie.folder_name}
@@ -365,8 +381,8 @@
 
         <button
           type="button"
-          class={episodesDirty ? 'btn-primary' : 'btn-secondary'}
-          style="height: 24px; padding: 0 8px; font-size: 0.76rem;"
+          class="{episodesDirty ? 'btn-primary' : 'btn-secondary'} g-st-77de87"
+         
           disabled={!episodesDirty || savingEpisodes}
           on:click={saveEpisodeStatuses}
           title={episodesDirty ? 'Save episode watch statuses' : 'No unsaved episode changes'}
@@ -380,7 +396,7 @@
             class="icon-btn"
             class:active-watch={Boolean(movie.folder_name) && localWatch === ''}
             on:click={() => movie.folder_name ? setWatch('') : onAddWanted?.({ ...movie, id: movie.tmdb_id || movie.id, watch_status: '' })}
-            title={movie.folder_name ? 'Unseen' : 'Add to Wanted as Unseen'}
+            title={movie.folder_name ? 'Unseen' : 'Add to Not Available as Unseen'}
             aria-label="Unseen"
           >
             <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.5" fill="#fffff8" stroke="#111" stroke-width="1.5" /></svg>
@@ -390,7 +406,7 @@
             class="icon-btn"
             class:active-watch={Boolean(movie.folder_name) && localWatch === 'liked'}
             on:click={() => movie.folder_name ? setWatch('liked') : onAddWanted?.({ ...movie, id: movie.tmdb_id || movie.id, watch_status: 'liked' })}
-            title={movie.folder_name ? 'Seen & Liked' : 'Add to Wanted as Seen & Liked'}
+            title={movie.folder_name ? 'Seen & Liked' : 'Add to Not Available as Seen & Liked'}
             aria-label="Seen and Liked"
           >
             <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#2b7a3d" /></svg>
@@ -400,7 +416,7 @@
             class="icon-btn"
             class:active-watch={Boolean(movie.folder_name) && localWatch === 'unfinished'}
             on:click={() => movie.folder_name ? setWatch('unfinished') : onAddWanted?.({ ...movie, id: movie.tmdb_id || movie.id, watch_status: 'unfinished' })}
-            title={movie.folder_name ? 'Unfinished' : 'Add to Wanted as Unfinished'}
+            title={movie.folder_name ? 'Unfinished' : 'Add to Not Available as Unfinished'}
             aria-label="Unfinished"
           >
             <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#8a8578" /></svg>
@@ -410,7 +426,7 @@
             class="icon-btn"
             class:active-watch={Boolean(movie.folder_name) && localWatch === 'disliked'}
             on:click={() => movie.folder_name ? setWatch('disliked') : onAddWanted?.({ ...movie, id: movie.tmdb_id || movie.id, watch_status: 'disliked' })}
-            title={movie.folder_name ? 'Seen & Disliked' : 'Add to Wanted as Seen & Disliked'}
+            title={movie.folder_name ? 'Seen & Disliked' : 'Add to Not Available as Seen & Disliked'}
             aria-label="Seen and Disliked"
           >
             <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#9e2a2b" /></svg>
@@ -445,11 +461,10 @@
         {/if}
       </div>
 
-      {#if extra?.runtime || extra?.countries || extra?.languages || extra?.genres}
+      {#if extra?.runtime || extra?.countries || extra?.genres}
         <div class="spec-strip">
           {#if extra?.runtime}<span>{extra.runtime} min</span>{/if}
           {#if extra?.countries}<span class="spec-item">{extra.countries}</span>{/if}
-          {#if extra?.languages}<span class="spec-item">{extra.languages}</span>{/if}
           {#if extra?.genres}<span class="spec-item">{extra.genres}</span>{/if}
         </div>
       {/if}
@@ -518,7 +533,7 @@
           <h3>
             Episodes ({ownedEpCount} of {episodesList.length} on Drive)
             {#if ownedEpCount < episodesList.length}
-              <span class="tag tag-wanted" style="margin-left: 6px; vertical-align: middle;">Incomplete · Wanted</span>
+              <span class="tag tag-wanted g-st-541143">Incomplete · Not Available</span>
             {/if}
           </h3>
           <div class="episode-list">
@@ -533,16 +548,17 @@
                     <span class="mono">S{String(movie.season_number || 1).padStart(2, '0')}E{String(ep.episode_number).padStart(2, '0')}</span>
                     <strong>{ep.name}</strong>
                     {#if ep.air_date}<span class="muted">({ep.air_date})</span>{/if}
-                    {#if hasFile}
-                      <span class="tag" style="margin-left: 6px;" title={ep.file_name}>
-                        {ep.quality?.trim() || movie.quality?.trim() || '???'}
-                      </span>
-                    {:else}
-                      <span class="tag tag-wanted" style="margin-left: 6px;">Wanted</span>
+                    {#if !hasFile}
+                      <span class="tag tag-wanted g-st-e3ec32">Not Available</span>
                     {/if}
                   </div>
 
-                  <div class="icon-actions">
+                  <div class="icon-actions g-st-9b2237">
+                    {#if hasFile}
+                      {@const epExt = ep.file_name.includes('.') ? ep.file_name.split('.').pop().toUpperCase() : ''}
+                      {@const epQualBase = ep.quality?.trim() || movie.quality?.trim() || '???'}
+                      <span class="tag" title={ep.file_name}>{epExt ? `${epQualBase} ${epExt}` : epQualBase}</span>
+                    {/if}
                     <button
                       type="button"
                       class="icon-btn"
@@ -613,7 +629,7 @@
                 {/if}
 
                 {#if epTags.length > 0 || epClips.length > 0}
-                  <div class="tax-pills" style="margin-top: 4px;">
+                  <div class="tax-pills g-st-07c6a7">
                     {#each epTags as t}<span class="tax-pill">{t}</span>{/each}
                     {#each epClips as c}<span class="tax-pill tax-clip">clip: {c}</span>{/each}
                   </div>

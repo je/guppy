@@ -66,7 +66,7 @@ fn find_node_binary() -> String {
 
 #[tauri::command]
 fn mount_shared_drive() -> Result<String, String> {
-    if Path::new("/Volumes/4TB0-SEAGATE/jelly").exists() || Path::new("/Volumes/jelly").exists() {
+    if Path::new(&config_val("hostJellyRoot", "/Volumes/media/jelly")).exists() || Path::new(&config_val("localShareMount", "/Volumes/jelly")).exists() {
         return Ok("Mounted".to_string());
     }
     let output = Command::new("osascript")
@@ -77,7 +77,7 @@ fn mount_shared_drive() -> Result<String, String> {
         .output()
         .map_err(|e| e.to_string())?;
 
-    if output.status.success() || Path::new("/Volumes/jelly").exists() {
+    if output.status.success() || Path::new(&config_val("localShareMount", "/Volumes/jelly")).exists() {
         Ok("Mounted".to_string())
     } else {
         Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
@@ -125,7 +125,7 @@ pub fn run() {
                     }
                 } else if is_port_open(&format!("{}:{}", host_ip(), config_val("hostPort", "3456"))) || is_port_open(&format!("{}:{}", config_val("hostMdns", "localhost"), config_val("hostPort", "3456"))) {
                     // Client Mac (Mac #2): auto-mount /Volumes/jelly if not already mounted
-                    if !Path::new("/Volumes/4TB0-SEAGATE/jelly").exists() && !Path::new("/Volumes/jelly").exists() {
+                    if !Path::new(&config_val("hostJellyRoot", "/Volumes/media/jelly")).exists() && !Path::new(&config_val("localShareMount", "/Volumes/jelly")).exists() {
                         let _ = Command::new("osascript")
                             .args([
                                 "-e",
@@ -143,6 +143,7 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
+                let _ = Command::new("pkill").args(["-f", "/tmp/guppy-server.mjs"]).spawn();
                 window.app_handle().exit(0);
             }
         })

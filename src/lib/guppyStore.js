@@ -96,7 +96,7 @@ export async function getConnectionStatus() {
 
   return {
     mode: isRemote ? 'remote' : 'host',
-    serverUrl: remote || 'Local SQLite',
+    serverUrl: remote || GUPPY_CONFIG.serverUrl,
     serverOk,
     driveMounted
   };
@@ -107,7 +107,7 @@ export async function isRemoteClient() {
   return Boolean(remote);
 }
 
-const tauriFetch = pluginFetch;
+const tauriFetch = (url, opts) => (typeof window !== 'undefined' && !window.__TAURI_INTERNALS__ ? window.fetch(url, opts) : pluginFetch(url, opts));
 
 async function callRemote(endpoint, payload) {
   const remote = await getRemoteServer();
@@ -387,7 +387,9 @@ export async function clearActivityLog() {
   await db.execute(`DELETE FROM activity_log`);
 }
 
+const enrichedMovieCache = new Map();
 export async function fetchEnrichedMovie(movie) {
+  if (movie?.id && enrichedMovieCache.has(movie.id)) return enrichedMovieCache.get(movie.id);
   const host = ["api", "themoviedb", "org"].join(".");
   const path = ["3", "movie", movie.id].join("/");
   const url = new URL(`https://${host}/${path}`);
@@ -659,12 +661,33 @@ export async function updateExistingMovie(oldFolderName, existing, movie, onDisk
 }
 
 export async function enrichFilmBatch(list) {
+  let localRows = [];
+  try {
+    const db = await initDb();
+    localRows = await db.select("SELECT tmdb_id, title, year, director, cast_list, imdb_id FROM wishlist_videos");
+  } catch (_) {}
+
+  const findLocalMeta = (item) => {
+    const yr = item.year ? String(item.year) : (item.release_date ? item.release_date.slice(0, 4) : '');
+    return localRows.find(d =>
+      (item.id && Number(d.tmdb_id) === Number(item.id)) ||
+      (d.title?.toLowerCase() === item.title?.toLowerCase() && (!yr || String(d.year) === yr))
+    );
+  };
+
   const out = [];
   for (let i = 0; i < list.length; i += 6) {
     const batch = list.slice(i, i + 6);
     const enrichedBatch = await Promise.all(
       batch.map(async (item) => {
-        if (item.director || item.cast_list) return item;
+        const local = findLocalMeta(item);
+        const merged = {
+          ...item,
+          director: item.director || local?.director || '',
+          cast_list: item.cast_list || local?.cast_list || '',
+          imdb_id: item.imdb_id || local?.imdb_id || ''
+        };
+        if (merged.director || merged.cast_list) return merged;
         try {
           const full = await fetchEnrichedMovie({
             id: item.id,
@@ -673,9 +696,9 @@ export async function enrichFilmBatch(list) {
             poster_path: item.poster_path,
             overview: item.overview
           });
-          return { ...item, director: full.director, cast_list: full.cast_list, imdb_id: full.imdb_id };
+          return { ...merged, director: full.director, cast_list: full.cast_list, imdb_id: full.imdb_id };
         } catch (_) {
-          return item;
+          return merged;
         }
       })
     );
@@ -756,16 +779,23 @@ export async function fetchPersonFilmography(personName, selectedPersonId = null
   });
 
   const seenDir = new Set();
-  const directed = (cData.crew || [])
+  const rawDirected = (cData.crew || [])
     .filter(m => m.media_type === 'movie' && m.job === 'Director' && m.id && !seenDir.has(m.id) && seenDir.add(m.id))
     .map(m => formatMovieCredit(m, 'Director'))
     .sort((a, b) => b.release_date.localeCompare(a.release_date));
 
   const seenCast = new Set();
-  const acted = (cData.cast || [])
+  const rawActed = (cData.cast || [])
     .filter(m => m.media_type === 'movie' && m.id && !seenCast.has(m.id) && seenCast.add(m.id))
     .map(m => formatMovieCredit(m, m.character || 'Cast'))
     .sort((a, b) => b.release_date.localeCompare(a.release_date));
+
+  const [enrichedDirHead, enrichedActHead] = await Promise.all([
+    enrichFilmBatch(rawDirected.slice(0, 60)).catch(() => rawDirected.slice(0, 60)),
+    enrichFilmBatch(rawActed.slice(0, 60)).catch(() => rawActed.slice(0, 60))
+  ]);
+  const directed = [...enrichedDirHead, ...rawDirected.slice(60)];
+  const acted = [...enrichedActHead, ...rawActed.slice(60)];
 
   const tvMap = new Map();
   for (const item of [...(cData.cast || []), ...(cData.crew || [])]) {
@@ -792,7 +822,7 @@ export async function fetchPersonFilmography(personName, selectedPersonId = null
 
     const rawTvList = [...tvMap.values()]
     .sort((a, b) => (b.episode_count || 0) - (a.episode_count || 0) || b.release_date.localeCompare(a.release_date))
-    .slice(0, 18);
+    .slice(0, 60);
 
   const tvShows = await Promise.all(
     rawTvList.map(async (show, idx) => {
@@ -1501,6 +1531,7 @@ export async function searchUniversal(query) {
       const startYear = show.first_air_date ? show.first_air_date.slice(0, 4) : '';
       const dUrl = new URL(`https://${host}/3/tv/${show.id}`);
       dUrl.searchParams.set("api_key", TMDB_API_KEY);
+      dUrl.searchParams.set("append_to_response", "credits,external_ids");
       const dData = await fetchJson(`tv-${show.id}`, dUrl);
 
       const valid = (dData.seasons || [])
@@ -1514,6 +1545,8 @@ export async function searchUniversal(query) {
         ? (inProduction ? `${startYear}–` : (endYear && endYear !== startYear ? `${startYear}–${endYear}` : startYear))
         : '';
 
+      const tvCast = (dData.credits?.cast || []).slice(0, 4).map(c => c.name).join(', ');
+      const tvImdb = dData.external_ids?.imdb_id || '';
       return {
         id: show.id,
         media_type: 'tv',
@@ -1523,6 +1556,8 @@ export async function searchUniversal(query) {
         poster_path: show.poster_path || '',
         poster_url: show.poster_path ? `${imgBase}${show.poster_path}` : '',
         overview: show.overview || '',
+        cast_list: tvCast,
+        imdb_id: tvImdb,
         seasons
       };
     })
@@ -2314,10 +2349,10 @@ export async function exportCatalogToJson() {
 
 export async function resolveLocalMediaPath(fullPath) {
   if (!fullPath) return fullPath;
-  if (fullPath.startsWith('/Volumes/4TB0-SEAGATE/jelly')) {
+  if (fullPath.startsWith(GUPPY_CONFIG.hostJellyRoot)) {
     const remote = await getRemoteServer();
     if (remote) {
-      return fullPath.replace('/Volumes/4TB0-SEAGATE/jelly', '/Volumes/jelly');
+      return fullPath.replace(GUPPY_CONFIG.hostJellyRoot, GUPPY_CONFIG.localShareMount);
     }
   }
   return fullPath;
@@ -2378,3 +2413,33 @@ export async function playInVlc(folderName, specificFileName = '', isTv = false)
     alert(`Could not start playback: ${err?.message || err}`);
   }
 }
+
+const videoExtCache = new Map();
+export async function getPrimaryVideoExt(item) {
+  if (!item?.folder_name) return '';
+  if (item.media_type === 'tv' && item.episodes_json) {
+    try {
+      const eps = JSON.parse(item.episodes_json);
+      const owned = Array.isArray(eps) ? eps.find(e => e.file_name) : null;
+      if (owned?.file_name && owned.file_name.includes('.')) {
+        return owned.file_name.split('.').pop().toUpperCase();
+      }
+    } catch (_) {}
+  }
+  const cacheKey = `${item.media_type || 'movie'}:${item.folder_name}`;
+  if (videoExtCache.has(cacheKey)) return videoExtCache.get(cacheKey);
+  try {
+    const root = getMediaRoot(item);
+    const files = await getMovieFolderFiles(item.folder_name, root);
+    const vid = (Array.isArray(files) ? files : [])
+      .filter(f => /\.(mp4|mkv|avi|mov|m4v|wmv|webm)$/i.test(f) && !/trailer|sample/i.test(f))
+      .sort((a, b) => a.localeCompare(b))
+      .at(0);
+    const ext = vid ? vid.split('.').pop().toUpperCase() : '';
+    videoExtCache.set(cacheKey, ext);
+    return ext;
+  } catch (_) {
+    return '';
+  }
+}
+

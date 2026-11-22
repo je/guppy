@@ -643,6 +643,9 @@
 
   onMount(async () => {
     await refreshConnectionStatus();
+    if (!connStatus.serverOk) {
+      setTimeout(() => { refreshConnectionStatus(); }, 1500);
+    }
     await runAudit();
     if (!isRemote) {
       const updatedTv = await backfillMissingTvMetadata();
@@ -669,9 +672,9 @@
 </script>
 
 <main class="container">
-  <div class="conn-bar" style="display: flex; align-items: center; gap: 12px; font-size: 0.78rem; padding: 6px 10px; margin-bottom: 8px; border-bottom: 1px solid #e2ddd2; color: #444;">
+  <div class="conn-bar g-st-6a0b66">
     <span>
-      <strong>{connStatus.mode === 'remote' ? 'Client Mac' : connStatus.mode === 'host' ? 'Host Mac' : 'Checking…'}</strong>
+      <strong>{connStatus.mode === 'remote' ? (typeof window !== 'undefined' && !window.__TAURI_INTERNALS__ ? 'Client Browser' : 'Client Mac') : connStatus.mode === 'host' ? 'Host Mac' : 'Checking…'}</strong>
       {#if connStatus.mode === 'remote'}
         · Server ({connStatus.serverUrl}):
         <strong style="color: {connStatus.serverOk ? '#2b7a3d' : '#9e2a2b'};">
@@ -680,7 +683,7 @@
       {:else if connStatus.mode === 'host'}
         · LAN Server:
         <strong style="color: {connStatus.serverOk ? '#2b7a3d' : '#8a8578'};">
-          {connStatus.serverOk ? 'Sharing on :3456' : 'Starting…'}
+          {connStatus.serverOk ? `Sharing on ${connStatus.serverUrl}` : 'Starting…'}
         </strong>
       {/if}
     </span>
@@ -693,15 +696,15 @@
     </span>
 
     {#if !connStatus.driveMounted}
-      <button type="button" class="btn-secondary" style="padding: 2px 8px; font-size: 0.74rem;" disabled={mountingDrive} on:click={handleMountDrive}>
+      <button type="button" class="btn-secondary g-st-ab0b11" disabled={mountingDrive} on:click={handleMountDrive}>
         {mountingDrive ? 'Mounting…' : 'Mount Drive'}
       </button>
     {/if}
 
     <button
       type="button"
-      class="btn-text"
-      style="margin-left: auto; font-size: 0.74rem;"
+      class="btn-text g-st-d0e0dd"
+     
       on:click={async () => { await refreshConnectionStatus(); await runAudit(); }}
     >
       Recheck
@@ -756,7 +759,7 @@
 
     <div class="header-mid">
         {#if viewMode !== 'split'}
-        <h2 class="watch-status-bar" style="margin: 0;">
+        <h2 class="watch-status-bar g-st-1c244e">
           <button
             type="button"
             class="status-filter-link"
@@ -790,18 +793,18 @@
         </h2>
 
       {:else if viewMode === 'split' && !isRemote}
-        <button type="button" class="btn-secondary" style="display: inline-flex; align-items: center; gap: 6px;" on:click={() => showBulkForm = !showBulkForm}>
+        <button type="button" class="btn-secondary g-st-678404" on:click={() => showBulkForm = !showBulkForm}>
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
           <span>Add Titles</span>
         </button>
 
-        <button type="button" class="btn-secondary" style="display: inline-flex; align-items: center; gap: 6px;" on:click={pickImportFolder}>
+        <button type="button" class="btn-secondary g-st-678404" on:click={pickImportFolder}>
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
           <span>Import Folder</span>
         </button>
 
         {#if !confirmRescan}
-          <button type="button" class="btn-secondary" style="display: inline-flex; align-items: center; gap: 6px;" on:click={() => { confirmRescan = true; confirmRewrite = false; }}>
+          <button type="button" class="btn-secondary g-st-678404" on:click={() => { confirmRescan = true; confirmRewrite = false; }}>
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
             <span>Rescan Folders</span>
           </button>
@@ -823,7 +826,7 @@
         {#if syncStatus}
           <button type="button" class="btn-secondary" disabled>{syncStatus}</button>
         {:else if !confirmRewrite}
-          <button type="button" class="btn-secondary" style="display: inline-flex; align-items: center; gap: 6px;" disabled={ownedCount === 0} on:click={() => { confirmRewrite = true; confirmRescan = false; }}>
+          <button type="button" class="btn-secondary g-st-678404" disabled={ownedCount === 0} on:click={() => { confirmRewrite = true; confirmRescan = false; }}>
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>
             <span>Rewrite Metafiles</span>
           </button>
@@ -834,7 +837,7 @@
           <button type="button" class="btn-secondary" on:click={() => { confirmRewrite = false; }}>Cancel</button>
         {/if}
 
-        <button type="button" class="btn-secondary" style="display: inline-flex; align-items: center; gap: 6px;" on:click={handleExportJson}>
+        <button type="button" class="btn-secondary g-st-678404" on:click={handleExportJson}>
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           <span>Export JSON</span>
         </button>
