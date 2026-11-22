@@ -1,7 +1,7 @@
 <script>
   import { onMount } from 'svelte';
-  import { revealItemInDir } from '@tauri-apps/plugin-opener';
-  import { MEDIA_ROOT, TV_ROOT, fetchMovieDetails, getMovieFolderFiles, fetchMovieKeywords, computeSeasonWatchStatus, fetchTvSeasonDetails } from '$lib/guppyStore.js';
+  import { revealItemInDir, openPath } from '@tauri-apps/plugin-opener';
+  import { getMediaRoot, fetchMovieDetails, getMovieFolderFiles, fetchMovieKeywords, computeSeasonWatchStatus, fetchTvSeasonDetails, playInVlc, resolveLocalMediaPath } from '$lib/guppyStore.js';
 
   export let movie;
   export let onDrive = true;
@@ -14,6 +14,9 @@
   export let onAddWanted;
 
   const imdbBase = ["https:/", "://imdb.com", "title", ""].join("/");
+  const isDesktopTauri = typeof window !== 'undefined' && Boolean(window.__TAURI_INTERNALS__);
+  let activeStream = null;
+  let streamError = "";
 
   let extra = null;
   let files = [];
@@ -28,6 +31,10 @@
 
   let localWatch = movie.watch_status || '';
   let lastFolder = movie.folder_name;
+  let seasonPickerOpen = false;
+  let episodesDirty = false;
+  let savingEpisodes = false;
+
 
   $: if (movie?.folder_name && movie.folder_name !== lastFolder) {
     lastFolder = movie.folder_name;
@@ -43,8 +50,16 @@
     ? movie.poster_url.replace('/w300/', '/w500/').replace('/w185/', '/w500/')
     : '';
 
-  $: rootDir = movie.media_type === 'tv' ? TV_ROOT : MEDIA_ROOT;
+  $: rootDir = getMediaRoot(movie);
+
     let episodesList = [];
+  let lastEpisodesJson = '';
+  $: if (movie && (movie.episodes_json || '') !== lastEpisodesJson) {
+    lastEpisodesJson = movie.episodes_json || '';
+    try {
+      episodesList = lastEpisodesJson ? JSON.parse(lastEpisodesJson) : [];
+    } catch (_) {}
+  }
     let editingEpNum = null;
     let epDraftTags = '';
     let epDraftClips = '';
@@ -91,7 +106,7 @@
     }
 
   onMount(async () => {
-    const baseRoot = movie.media_type === 'tv' ? TV_ROOT : MEDIA_ROOT;
+    const baseRoot = getMediaRoot(movie);
     const isLogged = Boolean(movie.folder_name);
     const [details, folderFiles, keywords] = await Promise.all([
       fetchMovieDetails(movie).catch(() => null),
@@ -140,14 +155,14 @@
     onBack();
   }
 
-  async function openMovieFolder() {
-    try {
-      await revealItemInDir(`${rootDir}/${movie.folder_name}`);
-    } catch (err) {
-      alert(`Could not open folder: ${err}`);
+    async function openMovieFolder() {
+        try {
+            const target = await resolveLocalMediaPath(`${rootDir}/${movie.folder_name}`);
+            await openPath(target);
+        } catch (err) {
+            alert(`Could not open folder: ${err}`);
+        }
     }
-  }
-
 
   async function setWatch(nextStatus) {
     localWatch = nextStatus;
@@ -168,9 +183,79 @@
     savedNote = 'Saved';
     setTimeout(() => savedNote = '', 1800);
   }
+
+  function applySeasonWatchToAll(status) {
+    episodesList = episodesList.map(ep => ({ ...ep, watch_status: status }));
+    episodesDirty = true;
+    seasonPickerOpen = false;
+  }
+
+  function setEpisodeWatchLocal(epNum, status) {
+    episodesList = episodesList.map(ep =>
+      Number(ep.episode_number) === Number(epNum) ? { ...ep, watch_status: status } : ep
+    );
+    episodesDirty = true;
+  }
+
+  async function saveEpisodeStatuses() {
+    if (!movie.folder_name || savingEpisodes) return;
+    savingEpisodes = true;
+    try {
+      await onSaveEpisodes?.(movie.folder_name, episodesList);
+      episodesDirty = false;
+    } finally {
+      savingEpisodes = false;
+    }
+  }
+  onMount(() => {
+    const onStream = (ev) => { streamError = ""; activeStream = ev.detail || null; };
+    window.addEventListener('guppy:stream', onStream);
+    return () => window.removeEventListener('guppy:stream', onStream);
+  });
 </script>
 
 <section class="detail-page">
+  {#if activeStream}
+    <div style="background: #111; color: #fff; border-radius: 8px; padding: 12px; margin-bottom: 14px;">
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; font-size: 0.85rem; flex-wrap: wrap;">
+        <strong style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;">{activeStream.title}</strong>
+        <div style="display: flex; align-items: center; gap: 12px; flex-shrink: 0;">
+          <a
+            href={`vlc-x-callback://x-callback-url/stream?url=${encodeURIComponent(activeStream.url)}`}
+            style="color: #93c5fd; text-decoration: underline; font-size: 0.8rem;"
+          >Open in VLC</a>
+          <a
+            href={activeStream.url}
+            target="_blank"
+            rel="noopener"
+            style="color: #d1d5db; text-decoration: underline; font-size: 0.8rem;"
+          >Direct Stream</a>
+          <button
+            type="button"
+            on:click={() => { activeStream = null; streamError = ""; }}
+            style="background: #374151; color: #fff; border: none; border-radius: 4px; padding: 3px 8px; cursor: pointer; font-size: 0.78rem;"
+          >Close</button>
+        </div>
+      </div>
+      {#if streamError}
+        <div style="background: #7f1d1d; color: #fecaca; padding: 8px 10px; border-radius: 4px; font-size: 0.8rem; margin-bottom: 8px;">
+          {streamError}
+        </div>
+      {/if}
+      <!-- svelte-ignore a11y-media-has-caption -->
+      <video
+        src={activeStream.url}
+        controls
+        autoplay
+        playsinline
+        on:error={() => {
+          const ext = (activeStream?.title || '').split('.').pop()?.toUpperCase() || 'this format';
+          streamError = `Safari cannot play ${ext} natively in-browser. Tap "Open in VLC" above (requires the free VLC for Mobile app on iPad).`;
+        }}
+        style="width: 100%; max-height: 60vh; border-radius: 4px; background: #000;"
+      ></video>
+    </div>
+  {/if}
   <div class="top-bar">
     <button type="button" class="btn-text" on:click={onBack}>← Back</button>
 
@@ -218,7 +303,7 @@
         </button>
       {/if}
 
-      {#if movie.folder_name && onDrive && movie.status !== 'wanted'}
+      {#if isDesktopTauri && movie.folder_name && onDrive && movie.status !== 'wanted'}
         <button
           type="button"
           class="icon-btn"
@@ -230,21 +315,64 @@
         </button>
       {/if}
 
-      {#if movie.folder_name && movie.media_type === 'tv'}
-        <span
-          class="season-watch-dot"
-          title={seasonWatch === 'liked' ? 'Season Seen & Liked' : seasonWatch === 'disliked' ? 'Season Disliked' : seasonWatch === 'unfinished' ? 'Season In Progress / Unfinished' : 'Season Unseen'}
+      {#if onDrive && movie.status !== 'wanted'}
+        <button
+        type="button"
+        class="icon-btn"
+        on:click={() => playInVlc(movie.folder_name, '', movie.media_type === 'tv')}
+        title="Play in VLC"
+        aria-label="Play in VLC"
         >
-          {#if seasonWatch === 'liked'}
-            <svg width="11" height="11" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#2b7a3d" /></svg>
-          {:else if seasonWatch === 'disliked'}
-            <svg width="11" height="11" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#9e2a2b" /></svg>
-          {:else if seasonWatch === 'unfinished'}
-            <svg width="11" height="11" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#8a8578" /></svg>
-          {:else}
-            <svg width="11" height="11" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.5" fill="#fffff8" stroke="#111" stroke-width="1.5" /></svg>
-          {/if}
-        </span>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+        </button>
+      {/if}
+
+      {#if movie.folder_name && movie.media_type === 'tv'}
+        {#if !seasonPickerOpen}
+          <button
+            type="button"
+            class="icon-btn"
+            on:click={() => { seasonPickerOpen = true; }}
+            title="Season status: {seasonWatch || 'Unseen'} (click to set status for all episodes)"
+            aria-label="Season watch status"
+          >
+            {#if seasonWatch === 'liked'}
+              <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#2b7a3d" /></svg>
+            {:else if seasonWatch === 'disliked'}
+              <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#9e2a2b" /></svg>
+            {:else if seasonWatch === 'unfinished'}
+              <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#8a8578" /></svg>
+            {:else}
+              <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.5" fill="#fffff8" stroke="#111" stroke-width="1.5" /></svg>
+            {/if}
+          </button>
+        {:else}
+          <span class="watch-triad">
+            <button type="button" class="icon-btn" on:click={() => applySeasonWatchToAll('')} title="Set all episodes to Unseen" aria-label="All Unseen">
+              <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.5" fill="#fffff8" stroke="#111" stroke-width="1.5" /></svg>
+            </button>
+            <button type="button" class="icon-btn" on:click={() => applySeasonWatchToAll('liked')} title="Set all episodes to Seen & Liked" aria-label="All Liked">
+              <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#2b7a3d" /></svg>
+            </button>
+            <button type="button" class="icon-btn" on:click={() => applySeasonWatchToAll('unfinished')} title="Set all episodes to Unfinished" aria-label="All Unfinished">
+              <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#8a8578" /></svg>
+            </button>
+            <button type="button" class="icon-btn" on:click={() => applySeasonWatchToAll('disliked')} title="Set all episodes to Seen & Disliked" aria-label="All Disliked">
+              <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#9e2a2b" /></svg>
+            </button>
+          </span>
+        {/if}
+
+        <button
+          type="button"
+          class={episodesDirty ? 'btn-primary' : 'btn-secondary'}
+          style="height: 24px; padding: 0 8px; font-size: 0.76rem;"
+          disabled={!episodesDirty || savingEpisodes}
+          on:click={saveEpisodeStatuses}
+          title={episodesDirty ? 'Save episode watch statuses' : 'No unsaved episode changes'}
+        >
+          {savingEpisodes ? 'Saving…' : 'Save'}
+        </button>
       {:else}
         <span class="watch-triad">
           <button
@@ -424,7 +552,17 @@
                     >
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2H2v10l9.29 9.29c.94.94 2.48.94 3.42 0l6.58-6.58c.94-.94.94-2.48 0-3.42L12 2Z"/><path d="M7 7h.01"/></svg>
                     </button>
-
+                    {#if ep.file_name}
+                    <button
+                    type="button"
+                    class="icon-btn"
+                    on:click={() => playInVlc(movie.folder_name, ep.file_name, true)}
+                    title="Play {ep.file_name} in VLC"
+                    aria-label="Play episode in VLC"
+                    >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+                    </button>
+                    {/if}
                     <span class="watch-triad">
                       <button
                         type="button"
@@ -533,7 +671,7 @@
       {#if movie.folder_name && onDrive && movie.status !== 'wanted'}
         <div class="sub-block">
           <h3>Drive Storage</h3>
-          <div class="mono path">{movie.media_type === 'tv' ? TV_ROOT : MEDIA_ROOT}/{movie.folder_name}</div>
+           <div class="mono path">{rootDir}/{movie.folder_name}</div>
           {#if files.length > 0}
             <ul class="file-list">
               {#each files as f}<li class="mono">{f}</li>{/each}

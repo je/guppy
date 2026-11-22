@@ -21,25 +21,32 @@
         { "url": "https://image.tmdb.org/**" },
         { "url": "https://*.wikipedia.org/**" },
         { "url": "https://wikimedia.org/**" },
-        { "url": "https://upload.wikimedia.org**" }
+        { "url": "https://upload.wikimedia.org**" },
+        { "url": "http://nmm.local:3456/**" },
+        { "url": "http://*:3456/**" }
       ]
     },
     {
       "identifier": "opener:allow-open-path",
       "allow": [
-        { "path": "/Volumes/4TB0-SEAGATE/**" }
+        { "path": "/Volumes/4TB0-SEAGATE/**", "app": "VLC" },
+        { "path": "/Volumes/4TB0-SEAGATE/**" },
+        { "path": "/Volumes/jelly/**", "app": "VLC" },
+        { "path": "/Volumes/jelly/**" }
       ]
     },
     {
       "identifier": "opener:allow-reveal-item-in-dir",
       "allow": [
-        { "path": "/Volumes/4TB0-SEAGATE/**" }
+        { "path": "/Volumes/4TB0-SEAGATE/**" },
+        { "path": "/Volumes/jelly/**" }
       ]
     },
     {
       "identifier": "fs:allow-exists",
       "allow": [
-        { "path": "/Volumes/4TB0-SEAGATE/**" }
+        { "path": "/Volumes/4TB0-SEAGATE/**" },
+        { "path": "/Volumes/jelly/**" }
       ]
     },
     {

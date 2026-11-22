@@ -1,7 +1,6 @@
 <script>
   import '$lib/guppy.css';
   import { onMount } from 'svelte';
-  import { writeTextFile, readDir } from '@tauri-apps/plugin-fs';
   import { save, open } from '@tauri-apps/plugin-dialog';
   import MovieCard from '$lib/MovieCard.svelte';
   import CollectionView from '$lib/CollectionView.svelte';
@@ -9,7 +8,7 @@
   import PersonView from '$lib/PersonView.svelte';
   import MovieDetailView from '$lib/MovieDetailView.svelte';
   import SearchResultsView from '$lib/SearchResultsView.svelte';
-  import { MEDIA_ROOT, TV_ROOT, VIDEO_EXTS, initDb, inferMetadata, inferFolder, searchTmdb, searchWikipediaMovie, fetchPersonFilmography, fetchEnrichedMovie, saveToLibrary, saveWantedMovie, updateExistingMovie, updateMovieTagsAndClips, syncAllJellyfinSidecars, removeMovieFromLibrary, updateMovieWatchStatus, searchUniversal, searchTmdbTv, fetchTvSeasonDetails, saveTvSeasonToLibrary, saveWantedTvSeason, updateSeasonEpisodes, computeSeasonWatchStatus, parseLooseTvFilename, exportCatalogToJson } from '$lib/guppyStore.js';
+  import { GUPPY_CONFIG, MEDIA_ROOT, TV_ROOT, THE_MOVIES_ROOT, VIDEO_EXTS, readDir, writeTextFile, initDb, inferMetadata, inferFolder, searchTmdb, searchWikipediaMovie, fetchPersonFilmography, saveToLibrary, saveWantedMovie, updateExistingMovie, updateMovieTagsAndClips, syncAllJellyfinSidecars, removeMovieFromLibrary, updateMovieWatchStatus, searchUniversal, searchTmdbTv, fetchTvSeasonDetails, saveTvSeasonToLibrary, saveWantedTvSeason, updateSeasonEpisodes, computeSeasonWatchStatus, parseLooseTvFilename, exportCatalogToJson, reconcileTvEpisodesOnDisk, backfillMissingTvMetadata, backfillMissingMovieMetadata, fetchEnrichedTvShow, logActivity, writeJellyfinTvSidecars, isRemoteClient, getConnectionStatus, mountSharedDrive,migrateNonAdultMovies  } from '$lib/guppyStore.js';
 
   let viewMode = 'collection';
   let previousView = 'split';
@@ -27,6 +26,7 @@
   let personQuery = '';
   let showBulkForm = false;
   let showAdultOnly = false;
+  let isRemote = true;
   let adultHoldRaf = null;
   let adultProgress = 0;
   let universalResults = null;
@@ -50,6 +50,11 @@
   }
 
   function startAdultHold() {
+    if (isRemote) {
+      showAdultOnly = false;
+      adultProgress = 0;
+      return;
+    }
     if (showAdultOnly) {
       showAdultOnly = false;
       adultProgress = 0;
@@ -83,11 +88,18 @@
   async function runAudit() {
     try {
       const db = await initDb();
-      const movieEntries = await readDir(MEDIA_ROOT);
-      const movieFolders = movieEntries
+
+      const theMovieEntries = await readDir(THE_MOVIES_ROOT).catch(() => []);
+      const theMovieFolders = theMovieEntries
         .filter(e => e.isDirectory && !e.name.startsWith('.') && e.name !== 'deleted')
-        .map(e => e.name)
-        .sort();
+        .map(e => e.name);
+
+      const artMovieEntries = !isRemote ? await readDir(MEDIA_ROOT).catch(() => []) : [];
+      const artMovieFolders = artMovieEntries
+        .filter(e => e.isDirectory && !e.name.startsWith('.') && e.name !== 'deleted')
+        .map(e => e.name);
+
+      const movieFolders = [...new Set([...theMovieFolders, ...artMovieFolders])].sort();
 
       const tvEntries = await readDir(TV_ROOT).catch(() => []);
       const tvFolders = tvEntries
@@ -96,14 +108,20 @@
         .sort();
 
       diskFolders = [...new Set([...movieFolders, ...tvFolders])].sort();
+      await reconcileTvEpisodesOnDisk();
       databaseEntries = await db.select("SELECT * FROM wishlist_videos ORDER BY title ASC");
+      if (activeMovie?.folder_name) {
+        const refreshed = databaseEntries.find(e => e.folder_name === activeMovie.folder_name);
+        if (refreshed) activeMovie = refreshed;
+      }
       const inDb = databaseEntries.map(r => r.folder_name);
       orphans = movieFolders.filter(f => !inDb.includes(f));
 
       const nextInputs = { ...inputs };
       for (const folder of orphans) {
         const key = `root:${folder}`;
-        if (!Reflect.get(nextInputs, key)) Reflect.set(nextInputs, key, await inferFolder(`${MEDIA_ROOT}/${folder}`, folder));
+        const orphanRoot = theMovieFolders.includes(folder) ? THE_MOVIES_ROOT : MEDIA_ROOT;
+        if (!Reflect.get(nextInputs, key)) Reflect.set(nextInputs, key, await inferFolder(`${orphanRoot}/${folder}`, folder));
       }
       inputs = nextInputs;
       statusMsg = '';
@@ -112,8 +130,9 @@
 
   async function pickImportFolder() {
     try {
-      const selected = await open({ directory: true, multiple: false, defaultPath: "/Volumes/4TB0-SEAGATE" });
+      const selected = await open({ directory: true, multiple: false, defaultPath: GUPPY_CONFIG.hostJellyRoot });
       if (!selected) return;
+      const selectedFolderName = String(selected || "").split("/").filter(Boolean).pop() || "";
       const entries = await readDir(selected);
       const items = [];
       const looseTvGroups = new Map();
@@ -125,7 +144,7 @@
         if (!entry.isDirectory && !isVideo) continue;
 
         if (!entry.isDirectory) {
-          const parsedTv = parseLooseTvFilename(entry.name);
+          const parsedTv = parseLooseTvFilename(entry.name, selectedFolderName);
           if (parsedTv) {
             if (!looseTvGroups.has(parsedTv.normKey)) {
               looseTvGroups.set(parsedTv.normKey, {
@@ -188,13 +207,14 @@
     } catch (err) { statusMsg = `Import error: ${err}`; }
   }
 
-
-  async function handleLookup(key, t = '', y = '', d = '') {
+  async function handleLookup(key, t = '', y = '', d = '', mediaOverride = '') {
     const cur = Reflect.get(inputs, key);
     const dbItem = key.startsWith('db:')
       ? databaseEntries.find(item => `db:${item.folder_name}` === key)
       : null;
-    const isTv = cur?.media_type === 'tv' || dbItem?.media_type === 'tv';
+    const isTv = mediaOverride
+      ? mediaOverride === 'tv'
+      : (cur?.media_type === 'tv' || dbItem?.media_type === 'tv');
 
     const title = t || cur?.title || dbItem?.title;
     const year = y || cur?.year || dbItem?.year;
@@ -211,8 +231,6 @@
     finally { loadingLookup = { ...loadingLookup, [key]: false }; }
   }
 
-
-
   async function handleWikiLookup(key, t = '', y = '', d = '') {
     const cur = Reflect.get(inputs, key);
     const title = t || cur?.title;
@@ -227,7 +245,6 @@
     } catch (err) { statusMsg = `Wikipedia lookup failed: ${err}`; }
     finally { loadingLookup = { ...loadingLookup, [key]: false }; }
   }
-
 
   async function handleSelect(key, movie) {
     const cur = Reflect.get(inputs, key) || {};
@@ -322,7 +339,6 @@
 
       if (isTv) {
         const seasonNum = Number(movie.season_number) || Number(existing?.season_number) || 1;
-
         let tvId = Number(movie.media_type === 'tv' ? movie.id : existing?.tmdb_id) || 0;
 
         if (!tvId && movie.title) {
@@ -332,6 +348,9 @@
 
         const seasonData = tvId
           ? await fetchTvSeasonDetails(tvId, seasonNum).catch(() => ({}))
+          : {};
+        const tvMeta = tvId
+          ? await fetchEnrichedTvShow(tvId).catch(() => ({}))
           : {};
 
         const prevEpisodes = (() => {
@@ -363,15 +382,18 @@
           : (movie.release_date ? Number(movie.release_date.slice(0, 4)) : (Number(movie.year) || existing?.year || 0));
         const posterUrl = seasonData.poster_url || movie.poster_url || existing?.poster_url || '';
         const overview = seasonData.overview || movie.overview || existing?.overview || '';
-        const castList = seasonData.cast_list || movie.cast_list || existing?.cast_list || '';
-        const imdbId = seasonData.imdb_id || movie.imdb_id || existing?.imdb_id || '';
+        const castList = seasonData.cast_list || movie.cast_list || tvMeta.cast_list || existing?.cast_list || '';
+        const imdbId = seasonData.imdb_id || movie.imdb_id || tvMeta.imdb_id || existing?.imdb_id || '';
+        const director = movie.director || tvMeta.director || existing?.director || '';
 
         await db.execute(
           `UPDATE wishlist_videos
-           SET title = ?, year = ?, poster_url = ?, overview = ?, cast_list = ?, imdb_id = ?, tmdb_id = ?, episodes_json = ?, watch_status = ?, media_type = 'tv', season_number = ?
+           SET title = ?, year = ?, poster_url = ?, overview = ?, cast_list = ?, director = ?, imdb_id = ?, tmdb_id = ?, episodes_json = ?, watch_status = ?, media_type = 'tv', season_number = ?
            WHERE folder_name = ?`,
-          [movie.title, seasonYear, posterUrl, overview, castList, imdbId, tvId, JSON.stringify(mergedEpisodes), rolledWatch, seasonNum, oldFolder]
+          [movie.title, seasonYear, posterUrl, overview, castList, director, imdbId, tvId, JSON.stringify(mergedEpisodes), rolledWatch, seasonNum, oldFolder]
         );
+
+        await logActivity('Updated Metadata', `${movie.title} · Season ${seasonNum}`, imdbId || '');
 
         if (existing?.status !== 'wanted' && diskFolders.includes(oldFolder)) {
           await writeJellyfinTvSidecars(`${TV_ROOT}/${oldFolder}`, {
@@ -386,20 +408,21 @@
 
         const next = { ...searchResults };
         Reflect.deleteProperty(next, `db:${oldFolder}`);
+        Reflect.deleteProperty(next, oldFolder);
         searchResults = next;
         await runAudit();
         return;
       }
 
-
       await updateExistingMovie(oldFolder, existing, movie, diskFolders.includes(oldFolder));
+      await logActivity('Updated Metadata', movie.title, movie.imdb_id || '');
       const next = { ...searchResults };
       Reflect.deleteProperty(next, `db:${oldFolder}`);
+      Reflect.deleteProperty(next, oldFolder);
       searchResults = next;
       await runAudit();
     } catch (err) { statusMsg = `Update failed: ${err}`; }
   }
-
 
   async function handleDelete(folderName) {
     try {
@@ -425,17 +448,18 @@
     if (!cleanName && !personId) return;
 
     const reqId = ++personReqId;
-    const prevQueryName = activePersonData?.queryName;
+    const isSwitchingMatchPill = viewMode === 'person' && Boolean(personId) && Boolean(activePersonData?.queryName);
+    const searchTerm = isSwitchingMatchPill ? activePersonData.queryName : cleanName;
+
     if (viewMode !== 'person') {
       viewHistory = [...viewHistory, viewMode];
     }
-    activePersonData = { name: cleanName, queryName: cleanName, directed: [], acted: [], tvShows: [], matches: [] };
+    activePersonData = { name: cleanName, queryName: searchTerm, directed: [], acted: [], tvShows: [], matches: [] };
     loadingPerson = true;
     statusMsg = '';
     viewMode = 'person';
 
     try {
-      const searchTerm = personId && prevQueryName ? prevQueryName : cleanName;
       const data = await fetchPersonFilmography(searchTerm, personId);
       if (reqId !== personReqId) return;
       activePersonData = { ...data, queryName: searchTerm };
@@ -521,7 +545,7 @@
     try {
       const dateStamp = new Date().toISOString().slice(0, 10);
       const filePath = await save({
-        defaultPath: `/Volumes/4TB0-SEAGATE/guppy-catalog-${dateStamp}.json`,
+        defaultPath: `${GUPPY_CONFIG.hostJellyRoot}/guppy-catalog-${dateStamp}.json`,
         filters: [{ name: 'JSON', extensions: ['json'] }]
       });
       if (!filePath) return;
@@ -538,6 +562,29 @@
 
   let watchFilter = 'all'; // 'all' | 'unseen' | 'liked' | 'disliked' | 'unfinished'
   let catalogTypeFilter = 'all';
+  let catalogCollectionFilter = 'all';
+  let catalogSearchFilter = '';
+  let confirmRewrite = false;
+  let confirmRescan = false;
+
+  $: ownedCount = visibleEntries.filter(i => i.status !== 'wanted' && diskFolders.includes(i.folder_name)).length;
+
+  $: catalogCountPool = (adultFilteredEntries.length > 0 ? adultFilteredEntries : visibleEntries).filter(item => {
+    if (catalogTypeFilter === 'movie' && (item.media_type || 'movie') !== 'movie') return false;
+    if (catalogTypeFilter === 'tv' && item.media_type !== 'tv') return false;
+    if (catalogCollectionFilter === 'collected' && item.status === 'wanted') return false;
+    if (catalogCollectionFilter === 'wanted' && item.status !== 'wanted') return false;
+    const q = catalogSearchFilter.toLowerCase().trim();
+    if (!q) return true;
+    return [item.title, item.director, item.cast_list, item.tags, item.clips, item.episodes_json, String(item.year)]
+      .some(v => v?.toLowerCase().includes(q));
+  });
+
+  $: listedCount = catalogCountPool.length;
+  $: unwatchedCount = catalogCountPool.filter(i => !i.watch_status || i.watch_status === '').length;
+  $: unfinishedCount = catalogCountPool.filter(i => i.watch_status === 'unfinished').length;
+  $: likedCount = catalogCountPool.filter(i => i.watch_status === 'liked').length;
+  $: hatedCount = catalogCountPool.filter(i => i.watch_status === 'disliked').length;
 
   function cycleWatchFilter() {
     const order = ['all', 'unseen', 'unfinished', 'liked', 'disliked'];
@@ -573,25 +620,124 @@
     return true;
   });
 
+  let connStatus = { mode: 'checking', serverUrl: '', serverOk: false, driveMounted: false };
+  let mountingDrive = false;
 
-  onMount(runAudit);
+  async function refreshConnectionStatus() {
+    connStatus = await getConnectionStatus();
+    isRemote = connStatus.mode === 'remote';
+    if (isRemote) showAdultOnly = false;
+  }
+
+  async function handleMountDrive() {
+    mountingDrive = true;
+    try {
+      await mountSharedDrive();
+    } catch (err) {
+      statusMsg = `Mount failed: ${err}`;
+    } finally {
+      mountingDrive = false;
+      await refreshConnectionStatus();
+    }
+  }
+
+  onMount(async () => {
+    await refreshConnectionStatus();
+    await runAudit();
+    if (!isRemote) {
+      const updatedTv = await backfillMissingTvMetadata();
+      const updatedMovies = await backfillMissingMovieMetadata();
+      const movedMovies = await migrateNonAdultMovies();
+      if (updatedTv || updatedMovies || movedMovies > 0) {
+        await runAudit();
+      }
+    }
+    const evSource = new EventSource(`${GUPPY_CONFIG.serverUrl}/api/events`);
+    evSource.onmessage = (ev) => {
+      try {
+        const msg = JSON.parse(ev.data || '{}');
+        if (msg.type === 'db_changed' && !showAddForm && !showBulkForm) {
+          runAudit();
+        }
+      } catch (_) {}
+    };
+    return () => {
+      evSource.close();
+    };
+  });
+
 </script>
 
 <main class="container">
-  <header>
-    <div class="nav-left">
+  <div class="conn-bar" style="display: flex; align-items: center; gap: 12px; font-size: 0.78rem; padding: 6px 10px; margin-bottom: 8px; border-bottom: 1px solid #e2ddd2; color: #444;">
+    <span>
+      <strong>{connStatus.mode === 'remote' ? 'Client Mac' : connStatus.mode === 'host' ? 'Host Mac' : 'Checking…'}</strong>
+      {#if connStatus.mode === 'remote'}
+        · Server ({connStatus.serverUrl}):
+        <strong style="color: {connStatus.serverOk ? '#2b7a3d' : '#9e2a2b'};">
+          {connStatus.serverOk ? 'Connected' : 'Unreachable'}
+        </strong>
+      {:else if connStatus.mode === 'host'}
+        · LAN Server:
+        <strong style="color: {connStatus.serverOk ? '#2b7a3d' : '#8a8578'};">
+          {connStatus.serverOk ? 'Sharing on :3456' : 'Starting…'}
+        </strong>
+      {/if}
+    </span>
+
+    <span>
+      · Media Drive:
+      <strong style="color: {connStatus.driveMounted ? '#2b7a3d' : '#9e2a2b'};">
+        {connStatus.driveMounted ? 'Mounted' : 'Not Mounted'}
+      </strong>
+    </span>
+
+    {#if !connStatus.driveMounted}
+      <button type="button" class="btn-secondary" style="padding: 2px 8px; font-size: 0.74rem;" disabled={mountingDrive} on:click={handleMountDrive}>
+        {mountingDrive ? 'Mounting…' : 'Mount Drive'}
+      </button>
+    {/if}
+
+    <button
+      type="button"
+      class="btn-text"
+      style="margin-left: auto; font-size: 0.74rem;"
+      on:click={async () => { await refreshConnectionStatus(); await runAudit(); }}
+    >
+      Recheck
+    </button>
+  </div>
+
+  <header class="app-header">
+    <div class="header-left">
       <button
         type="button"
         class="adult-toggle"
-        class:adult-active={showAdultOnly}
-        on:mousedown={startAdultHold}
-        on:mouseup={cancelAdultHold}
-        on:mouseleave={cancelAdultHold}
+        class:adult-active={!isRemote && showAdultOnly}
+        style={isRemote ? 'cursor: default;' : ''}
+        on:mousedown={isRemote ? null : startAdultHold}
+        on:mouseup={isRemote ? null : cancelAdultHold}
+        on:mouseleave={isRemote ? null : cancelAdultHold}
         aria-label="Catalog mode"
       >
         <svg width="18" height="18" viewBox="0 0 18 18">
-          <circle cx="9" cy="9" r="5" fill="currentColor" />
-          {#if adultProgress > 0}
+          {#if viewMode === 'collection' && watchFilter === 'unseen'}
+            <circle cx="9" cy="9" r="4.25" fill="#fffff8" stroke="#111" stroke-width="1.5" />
+          {:else if viewMode === 'collection' && watchFilter === 'liked'}
+            <circle cx="9" cy="9" r="5" fill="#2b7a3d" />
+          {:else if viewMode === 'collection' && watchFilter === 'unfinished'}
+            <circle cx="9" cy="9" r="5" fill="#8a8578" />
+          {:else if viewMode === 'collection' && watchFilter === 'disliked'}
+            <circle cx="9" cy="9" r="5" fill="#9e2a2b" />
+          {:else}
+            <circle cx="9" cy="9" r="5" fill="currentColor" />
+          {/if}
+
+          {#if !isRemote && showAdultOnly && adultProgress === 0}
+            <circle cx="9" cy="9" r="7.5" fill="none" stroke="currentColor" stroke-width="1.2" opacity="0.55" />
+          {/if}
+
+          {#if !isRemote && adultProgress > 0}
             <circle
               cx="9"
               cy="9"
@@ -606,26 +752,127 @@
           {/if}
         </svg>
       </button>
-
-      <button
-        type="button"
-        class="brand-toggle"
-        on:click={() => { viewHistory = []; activeMovie = null; activePersonData = null; viewMode = viewMode === 'collection' ? 'split' : 'collection'; }}
-        title={viewMode === 'collection' ? 'Switch to Audit & Import' : 'Return to Catalog'}
-      >
-        Guppy
-      </button>
     </div>
 
-    <form class="person-search" on:submit|preventDefault={() => runUniversalSearch(personQuery)}>
-      <input
-        type="text"
-        placeholder="Search title, director, or cast…"
-        bind:value={personQuery}
-      />
-      <button type="submit" class="btn-secondary">Search</button>
-    </form>
+    <div class="header-mid">
+        {#if viewMode !== 'split'}
+        <h2 class="watch-status-bar" style="margin: 0;">
+          <button
+            type="button"
+            class="status-filter-link"
+            class:active={viewMode === 'collection' && watchFilter === 'all'}
+            on:click={() => { watchFilter = 'all'; activeMovie = null; viewMode = 'collection'; }}
+          >{listedCount} Listed</button><span class="sep">,</span>
+          <button
+            type="button"
+            class="status-filter-link"
+            class:active={viewMode === 'collection' && watchFilter === 'unseen'}
+            on:click={() => { watchFilter = 'unseen'; activeMovie = null; viewMode = 'collection'; }}
+          >{unwatchedCount} Unwatched</button><span class="sep">,</span>
+          <button
+            type="button"
+            class="status-filter-link"
+            class:active={viewMode === 'collection' && watchFilter === 'unfinished'}
+            on:click={() => { watchFilter = 'unfinished'; activeMovie = null; viewMode = 'collection'; }}
+          >{unfinishedCount} Unfinished</button><span class="sep">,</span>
+          <button
+            type="button"
+            class="status-filter-link"
+            class:active={viewMode === 'collection' && watchFilter === 'liked'}
+            on:click={() => { watchFilter = 'liked'; activeMovie = null; viewMode = 'collection'; }}
+          >{likedCount} Liked</button><span class="sep">, and</span>
+          <button
+            type="button"
+            class="status-filter-link"
+            class:active={viewMode === 'collection' && watchFilter === 'disliked'}
+            on:click={() => { watchFilter = 'disliked'; activeMovie = null; viewMode = 'collection'; }}
+          >{hatedCount} Hated</button>
+        </h2>
 
+      {:else if viewMode === 'split' && !isRemote}
+        <button type="button" class="btn-secondary" style="display: inline-flex; align-items: center; gap: 6px;" on:click={() => showBulkForm = !showBulkForm}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          <span>Add Titles</span>
+        </button>
+
+        <button type="button" class="btn-secondary" style="display: inline-flex; align-items: center; gap: 6px;" on:click={pickImportFolder}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
+          <span>Import Folder</span>
+        </button>
+
+        {#if !confirmRescan}
+          <button type="button" class="btn-secondary" style="display: inline-flex; align-items: center; gap: 6px;" on:click={() => { confirmRescan = true; confirmRewrite = false; }}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
+            <span>Rescan Folders</span>
+          </button>
+        {:else}
+          <button
+            type="button"
+            class="btn-primary"
+            on:click={async () => {
+              confirmRescan = false;
+              statusMsg = 'Rescanning library folders…';
+              await runAudit();
+              statusMsg = 'Library folders rescanned.';
+              setTimeout(() => { if (statusMsg === 'Library folders rescanned.') statusMsg = ''; }, 2500);
+            }}
+          >Confirm Rescan?</button>
+          <button type="button" class="btn-secondary" on:click={() => { confirmRescan = false; }}>Cancel</button>
+        {/if}
+
+        {#if syncStatus}
+          <button type="button" class="btn-secondary" disabled>{syncStatus}</button>
+        {:else if !confirmRewrite}
+          <button type="button" class="btn-secondary" style="display: inline-flex; align-items: center; gap: 6px;" disabled={ownedCount === 0} on:click={() => { confirmRewrite = true; confirmRescan = false; }}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>
+            <span>Rewrite Metafiles</span>
+          </button>
+        {:else}
+          <button type="button" class="btn-primary" on:click={() => { confirmRewrite = false; handleSyncSidecars(); }}>
+            Confirm Rewrite ({ownedCount} Folders)?
+          </button>
+          <button type="button" class="btn-secondary" on:click={() => { confirmRewrite = false; }}>Cancel</button>
+        {/if}
+
+        <button type="button" class="btn-secondary" style="display: inline-flex; align-items: center; gap: 6px;" on:click={handleExportJson}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <span>Export JSON</span>
+        </button>
+      {/if}
+    </div>
+
+    <div class="header-right">
+      {#if viewMode === 'collection' && !isRemote}
+        <button
+          type="button"
+          class="icon-btn"
+          on:click={() => { viewHistory = []; activeMovie = null; activePersonData = null; viewMode = 'split'; }}
+          title="Switch to Audit & Import"
+          aria-label="Switch to Audit and Import"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="m9 14 2 2 4-4"/></svg>
+        </button>
+      {:else}
+        <button
+          type="button"
+          class="icon-btn"
+          on:click={() => { viewHistory = []; activeMovie = null; activePersonData = null; viewMode = 'collection'; }}
+          title="Return to Catalog"
+          aria-label="Return to Catalog"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M3 7.5h4"/><path d="M3 12h18"/><path d="M3 16.5h4"/><path d="M17 3v18"/><path d="M17 7.5h4"/><path d="M17 16.5h4"/></svg>
+        </button>
+      {/if}
+
+      <form class="person-search" on:submit|preventDefault={() => runUniversalSearch(personQuery)}>
+        <input
+          type="text"
+          placeholder="Search title, director, or cast…"
+          bind:value={personQuery}
+        />
+        <button type="submit" class="btn-secondary">Search</button>
+      </form>
+    </div>
   </header>
 
 
@@ -662,10 +909,16 @@
       loading={loadingUniversal}
       {databaseEntries}
       {diskFolders}
+      {searchResults}
       onSelectPerson={(name, id) => openPersonPage(name, id)}
       onPersonClick={openPersonPage}
       onOpenMovie={openMoviePage}
       onWatchStatus={handleWatchStatusChange}
+      onLookup={handleLookup}
+      onWikiLookup={handleWikiLookup}
+      onSelect={handleUpdate}
+      onDelete={handleDelete}
+      onSaveTags={handleSaveTags}
       onAddWanted={async (film) => {
         await saveWantedMovie(film);
         await runAudit();
@@ -714,6 +967,14 @@
       onWatchStatus={handleWatchStatusChange}
       onDelete={handleDelete}
       onSaveEpisodes={async (fn, eps) => {
+        const episodesJson = JSON.stringify(eps);
+        const rolledWatch = computeSeasonWatchStatus(eps);
+        databaseEntries = databaseEntries.map(e =>
+          e.folder_name === fn ? { ...e, episodes_json: episodesJson, watch_status: rolledWatch } : e
+        );
+        if (activeMovie?.folder_name === fn) {
+          activeMovie = { ...activeMovie, episodes_json: episodesJson, watch_status: rolledWatch };
+        }
         await updateSeasonEpisodes(fn, eps);
         await runAudit();
         activeMovie = databaseEntries.find(e => e.folder_name === fn) || activeMovie;
@@ -726,44 +987,46 @@
       loading={loadingPerson}
       {databaseEntries}
       {diskFolders}
+      {searchResults}
       {watchFilter}
       onSelectPerson={(name, id) => openPersonPage(name, id)}
       onPersonClick={openPersonPage}
-      onOpenMovie={openMoviePage}
       onBack={goBack}
-      onAddWanted={async (film, fallbackDirector) => {
-        await saveWantedMovie({ ...film, director: film.director || fallbackDirector });
+      onOpenMovie={openMoviePage}
+      onWatchStatus={handleWatchStatusChange}
+      onLookup={handleLookup}
+      onWikiLookup={handleWikiLookup}
+      onSelect={handleUpdate}
+      onDelete={handleDelete}
+      onSaveTags={handleSaveTags}
+      onAddWanted={async (film, fallbackDirector = '') => {
+        await saveWantedMovie({
+          ...film,
+          director: film.director || fallbackDirector
+        });
         await runAudit();
       }}
       onRemoveWanted={async (film) => {
-        const match = film.media_type === 'tv'
-          ? databaseEntries.find(
-              d => d.status === 'wanted' && d.media_type === 'tv' &&
-                Number(d.season_number) === Number(film.season_number || 1) &&
-                (Number(d.tmdb_id) === Number(film.id) || d.title?.toLowerCase() === film.title?.toLowerCase())
-            )
-          : databaseEntries.find(
-              d => d.status === 'wanted' && (d.media_type || 'movie') === 'movie' &&
-                d.title?.toLowerCase() === film.title?.toLowerCase() && (!film.year || String(d.year) === String(film.year))
-            );
+        const match = databaseEntries.find(
+          d => d.status === 'wanted' && (d.media_type || 'movie') === 'movie' &&
+            d.title?.toLowerCase() === film.title?.toLowerCase() && (!film.year || String(d.year) === String(film.year))
+        );
         if (match) await handleDelete(match.folder_name);
       }}
       onAddWantedTv={async (show, seasonNum) => {
         await saveWantedTvSeason(show, seasonNum);
         await runAudit();
       }}
-      onWatchStatus={handleWatchStatusChange}
     />
-
 
   {:else if viewMode === 'collection'}
     <CollectionView
-      allEntries={adultFilteredEntries}
       databaseEntries={visibleEntries}
       {diskFolders}
       {searchResults}
-      bind:watchFilter
       bind:typeFilter={catalogTypeFilter}
+      bind:collectionFilter={catalogCollectionFilter}
+      bind:searchFilter={catalogSearchFilter}
       onLookup={handleLookup}
       onWikiLookup={handleWikiLookup}
       onSelect={handleUpdate}
@@ -783,9 +1046,7 @@
       {searchResults}
       {loadingLookup}
       {saveErrors}
-      {syncStatus}
       {showBulkForm}
-      onPickImport={pickImportFolder}
       onToggleBulk={() => showBulkForm = !showBulkForm}
       onAudit={async (addedCount = 0) => {
         await runAudit();
@@ -794,14 +1055,6 @@
           setTimeout(() => { if (statusMsg.startsWith('Added ')) statusMsg = ''; }, 3500);
         }
       }}
-      onRescan={async () => {
-        statusMsg = 'Rescanning library folders…';
-        await runAudit();
-        statusMsg = 'Library folders rescanned.';
-        setTimeout(() => { if (statusMsg === 'Library folders rescanned.') statusMsg = ''; }, 2500);
-      }}
-      onSyncSidecars={handleSyncSidecars}
-      onExportJson={handleExportJson}
       onClearImport={() => importQueue = []}
       onLookup={handleLookup}
       onWikiLookup={handleWikiLookup}

@@ -1,11 +1,209 @@
-import { readDir, mkdir, exists, rename, writeTextFile, writeFile } from '@tauri-apps/plugin-fs';
-import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
-import Database from '@tauri-apps/plugin-sql';
+import { GUPPY_CONFIG } from '$lib/guppyConfig.js';
+export { GUPPY_CONFIG };
+export const TMDB_API_KEY = GUPPY_CONFIG.tmdbApiKey;
 
-export const MEDIA_ROOT = "/Volumes/4TB0-SEAGATE/jelly/art-films";
-export const TV_ROOT = '/Volumes/4TB0-SEAGATE/jelly/tv-shows';
-export const TMDB_API_KEY = "dfb20686272aa46d95f96be6322a767b";
-export const VIDEO_EXTS = ['.mp4', '.mkv', '.avi', '.mov', '.m4v', '.wmv', '.webm'];
+export const MEDIA_ROOT = GUPPY_CONFIG.artFilmsRoot;
+export const THE_MOVIES_ROOT = GUPPY_CONFIG.theMoviesRoot;
+export const TV_ROOT = GUPPY_CONFIG.tvRoot;
+export const DELETED_ROOT = GUPPY_CONFIG.deletedRoot;
+export const VIDEO_EXTS = GUPPY_CONFIG.videoExts;
+
+export function notifyRemoteClients() {
+  window.fetch(`${GUPPY_CONFIG.serverUrl}/api/notify`, { method: 'POST' }).catch(() => {});
+}
+
+import * as tauriFs from '@tauri-apps/plugin-fs';
+import { fetch as pluginFetch } from '@tauri-apps/plugin-http';
+import TauriDatabase from '@tauri-apps/plugin-sql';
+
+let resolvedRemoteServer = null;
+
+function getLanFetcher() {
+  return window.fetch.bind(window);
+}
+
+async function getRemoteServer() {
+  if (resolvedRemoteServer !== null) return resolvedRemoteServer;
+
+  if (typeof window !== 'undefined') {
+    if (!window.__TAURI_INTERNALS__) {
+      resolvedRemoteServer = `${window.location.protocol}//${window.location.hostname}:${GUPPY_CONFIG.hostPort}`;
+      return resolvedRemoteServer;
+    }
+    const isHostMac = await tauriFs.exists(GUPPY_CONFIG.hostJellyRoot).catch(() => false);
+    if (!isHostMac) {
+      const fetcher = getLanFetcher();
+      const ipBase = GUPPY_CONFIG.serverUrl;
+      const mdnsBase = `http://${GUPPY_CONFIG.hostMdns}:${GUPPY_CONFIG.hostPort}`;
+
+      for (const lanBase of [ipBase, mdnsBase]) {
+        try {
+          const probe = await fetcher(`${lanBase}/health`, { method: 'GET' });
+          if (probe.ok) {
+            resolvedRemoteServer = lanBase;
+            return resolvedRemoteServer;
+          }
+        } catch (_) {}
+      }
+
+      resolvedRemoteServer = ipBase;
+      return resolvedRemoteServer;
+    }
+  }
+
+  resolvedRemoteServer = '';
+  return resolvedRemoteServer;
+}
+
+export async function getConnectionStatus() {
+  resolvedRemoteServer = null;
+  const remote = await getRemoteServer();
+  const isRemote = Boolean(remote);
+  let serverOk = false;
+
+  if (isRemote) {
+    try {
+      const fetcher = getLanFetcher();
+      const res = await fetcher(`${remote}/health`, { method: 'GET' });
+      serverOk = res.ok;
+    } catch (_) {
+      serverOk = false;
+    }
+  } else {
+    try {
+      const fetcher = getLanFetcher();
+      const localHealth = `${GUPPY_CONFIG.serverUrl}/health`;
+      const res = await fetcher(localHealth, { method: 'GET' });
+      serverOk = res.ok;
+    } catch (_) {
+      serverOk = false;
+    }
+  }
+
+  let driveMounted = false;
+  if (typeof window !== 'undefined' && !window.__TAURI_INTERNALS__) {
+    driveMounted = serverOk;
+  } else {
+    try {
+      driveMounted =
+        (await tauriFs.exists(GUPPY_CONFIG.hostJellyRoot).catch(() => false)) ||
+        (await tauriFs.exists(`${GUPPY_CONFIG.localShareMount}/the-movies`).catch(() => false)) ||
+        (await tauriFs.exists(`${GUPPY_CONFIG.localShareMount}/tv-shows`).catch(() => false));
+    } catch (_) {
+      driveMounted = false;
+    }
+  }
+
+  return {
+    mode: isRemote ? 'remote' : 'host',
+    serverUrl: remote || 'Local SQLite',
+    serverOk,
+    driveMounted
+  };
+}
+
+export async function isRemoteClient() {
+  const remote = await getRemoteServer();
+  return Boolean(remote);
+}
+
+const tauriFetch = pluginFetch;
+
+async function callRemote(endpoint, payload) {
+  const remote = await getRemoteServer();
+  const fetcher = getLanFetcher();
+  const res = await fetcher(`${remote}${endpoint}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Guppy-Client': 'remote' },
+    body: JSON.stringify(payload)
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `Server error ${res.status}`);
+  return data;
+}
+
+const Database = {
+  load: async (connStr) => {
+    if (await getRemoteServer()) {
+      return {
+        select: async (sql, params = []) => (await callRemote('/api/sql/select', { sql, params })).rows,
+        execute: async (sql, params = []) => await callRemote('/api/sql/execute', { sql, params })
+      };
+    }
+    return await TauriDatabase.load(connStr);
+  }
+};
+
+export const readDir = async (path) =>
+  (await getRemoteServer()) ? (await callRemote('/api/fs/readDir', { path })).entries : tauriFs.readDir(path);
+
+const exists = async (path) =>
+  (await getRemoteServer()) ? (await callRemote('/api/fs/exists', { path })).exists : tauriFs.exists(path);
+
+const mkdir = async (path, opts = {}) =>
+  (await getRemoteServer()) ? void (await callRemote('/api/fs/mkdir', { path, ...opts })) : tauriFs.mkdir(path, opts);
+
+const rename = async (oldPath, newPath) =>
+  (await getRemoteServer()) ? void (await callRemote('/api/fs/rename', { oldPath, newPath })) : tauriFs.rename(oldPath, newPath);
+
+const remove = async (path, opts = {}) =>
+  (await getRemoteServer()) ? void (await callRemote('/api/fs/remove', { path, ...opts })) : tauriFs.remove(path, opts);
+
+export const writeTextFile = async (path, contents) =>
+  (await getRemoteServer()) ? void (await callRemote('/api/fs/writeTextFile', { path, contents })) : tauriFs.writeTextFile(path, contents);
+
+const writeFile = async (path, bytes) => {
+  if (await getRemoteServer()) {
+    let binary = '';
+    const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    for (let i = 0; i < arr.length; i++) binary += String.fromCharCode(arr[i]);
+    await callRemote('/api/fs/writeFile', { path, bytesBase64: btoa(binary) });
+    return;
+  }
+  return tauriFs.writeFile(path, bytes);
+};
+
+import { openPath } from '@tauri-apps/plugin-opener';
+
+export function isAdultEntry(item) {
+  return (item?.tags || '')
+    .toLowerCase()
+    .split(',')
+    .map(t => t.trim())
+    .includes('adult');
+}
+
+export function getMediaRoot(itemOrMeta) {
+  if (!itemOrMeta) return THE_MOVIES_ROOT;
+  if (itemOrMeta.media_type === "tv") return TV_ROOT;
+  return isAdultEntry(itemOrMeta) ? MEDIA_ROOT : THE_MOVIES_ROOT;
+}
+
+export async function migrateNonAdultMovies() {
+  const db = await initDb();
+  await mkdir(THE_MOVIES_ROOT, { recursive: true }).catch(() => {});
+  const rows = await db.select(
+    `SELECT folder_name, tags FROM wishlist_videos
+     WHERE (media_type IS NULL OR media_type = 'movie')
+       AND COALESCE(status, 'owned') != 'wanted'
+       AND folder_name IS NOT NULL AND folder_name != ''`
+  );
+  let movedCount = 0;
+  for (const row of rows) {
+    if (isAdultEntry(row)) continue;
+    const src = `${MEDIA_ROOT}/${row.folder_name}`;
+    const dst = `${THE_MOVIES_ROOT}/${row.folder_name}`;
+    if ((await exists(src).catch(() => false)) && !(await exists(dst).catch(() => false))) {
+      try {
+        await rename(src, dst);
+        movedCount += 1;
+      } catch (err) {
+        console.warn(`Could not migrate ${row.folder_name} to the-movies:`, err);
+      }
+    }
+  }
+  return movedCount;
+}
 
 function extractQuality(text) {
   const s = String(text || '');
@@ -118,9 +316,76 @@ export async function initDb() {
   ]) {
     try { await db.execute(`ALTER TABLE wishlist_videos ADD COLUMN ${col}`); } catch (_) {}
   }
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS activity_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      created_at TEXT DEFAULT (datetime('now', 'localtime')),
+      action TEXT,
+      title TEXT,
+      detail TEXT DEFAULT ''
+    )
+  `);
+
+  const origExecute = db.execute.bind(db);
+  db.execute = async (...args) => {
+    const res = await origExecute(...args);
+    notifyRemoteClients();
+    return res;
+  };
+
   return db;
 }
 
+function formatWatchLabel(status) {
+  if (status === 'liked') return 'Seen & Liked';
+  if (status === 'unfinished') return 'Unfinished';
+  if (status === 'disliked') return 'Seen & Disliked';
+  return 'Unseen';
+}
+
+export async function logActivity(action, title, detail = '') {
+  try {
+    const remote = await getRemoteServer();
+    const isRemote = Boolean(remote);
+    const fullDetail = ['__SOURCE__', detail].filter(Boolean).join(' · ');
+    const fetcher = getLanFetcher();
+    await fetcher(`${GUPPY_CONFIG.serverUrl}/api/sql/execute`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Guppy-Client': isRemote ? 'remote' : 'host'
+      },
+      body: JSON.stringify({
+        sql: `INSERT INTO activity_log (action, title, detail) VALUES (?, ?, ?)`,
+        params: [String(action || ''), String(title || ''), fullDetail]
+      })
+    });
+    await fetcher(`${GUPPY_CONFIG.serverUrl}/api/sql/execute`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Guppy-Client': isRemote ? 'remote' : 'host'
+      },
+      body: JSON.stringify({
+        sql: `DELETE FROM activity_log WHERE id NOT IN (SELECT id FROM activity_log ORDER BY id DESC LIMIT 200)`,
+        params: []
+      })
+    });
+  } catch (_) {}
+}
+
+export async function loadActivityLog(limit = 40) {
+  const db = await initDb();
+  return await db.select(
+    `SELECT id, created_at, action, title, detail FROM activity_log ORDER BY id DESC LIMIT ?`,
+    [Number(limit) || 40]
+  );
+}
+
+export async function clearActivityLog() {
+  const db = await initDb();
+  await db.execute(`DELETE FROM activity_log`);
+}
 
 export async function fetchEnrichedMovie(movie) {
   const host = ["api", "themoviedb", "org"].join(".");
@@ -252,12 +517,13 @@ export async function searchTmdb(title, year = '', director = '') {
   return finalList;
 }
 
-
 export async function saveToLibrary(item, entry) {
   const db = await initDb();
-  const safeTitle = entry.title.replace(/[/\\:]/g, ' -').trim();
-  const cleanFolderName = `${entry.year} - ${safeTitle} [${(entry.quality || '').trim()}]${entry.imdb_id?.trim() ? ` [imdbid-${entry.imdb_id.trim()}]` : ''}`;
-  const destFolder = `${MEDIA_ROOT}/${cleanFolderName}`;
+  const safeTitle = entry.title.replace(/[/\\:]/g, " -").trim();
+  const cleanFolderName = `${entry.year} - ${safeTitle} [${(entry.quality || "").trim()}]${entry.imdb_id?.trim() ? ` [imdbid-${entry.imdb_id.trim()}]` : ""}`;
+  const targetRoot = getMediaRoot(entry);
+  await mkdir(targetRoot, { recursive: true }).catch(() => {});
+  const destFolder = `${targetRoot}/${cleanFolderName}`;
 
   if (item.sourcePath !== destFolder && await exists(destFolder)) {
     throw new Error(`Duplicate folder already exists: "${cleanFolderName}". Remove the old copy first or use a different quality label.`);
@@ -276,17 +542,17 @@ export async function saveToLibrary(item, entry) {
       cleanFolderName,
       entry.title.trim(),
       parseInt(entry.year),
-      entry.quality?.trim() || '',
-      entry.imdb_id || '',
-      entry.poster_url || '',
-      entry.director || '',
-      entry.cast_list || '',
-      entry.overview || '',
-      entry.watch_status || ''
+      entry.quality?.trim() || "",
+      entry.imdb_id || "",
+      entry.poster_url || "",
+      entry.director || "",
+      entry.cast_list || "",
+      entry.overview || "",
+      entry.watch_status || ""
     ]
   );
-
-  await writeJellyfinSidecars(`${MEDIA_ROOT}/${cleanFolderName}`, entry);
+  await writeJellyfinSidecars(destFolder, entry);
+  await logActivity("Imported Movie", entry.title || cleanFolderName, entry.quality || "");
 }
 
 export async function saveWantedMovie(movie) {
@@ -301,6 +567,21 @@ export async function saveWantedMovie(movie) {
   );
   if (existing.length > 0) return;
 
+  let tmdbId = Number(movie.tmdb_id || movie.movie_id || movie.id) || 0;
+  if (!tmdbId) {
+    try {
+      const hits = await searchTmdb(title, year ? String(year) : '', movie.director || '');
+      if (hits.length > 0) tmdbId = Number(hits.at(0).id) || 0;
+    } catch (_) {}
+  }
+
+  let enriched = movie;
+  if (tmdbId && (!movie.imdb_id || !movie.cast_list || !movie.director)) {
+    try {
+      enriched = await fetchEnrichedMovie({ ...movie, id: tmdbId });
+    } catch (_) {}
+  }
+
   const safeTitle = title.replace(/[/\\:]/g, ' -').trim();
   const folderName = `${year ? year + ' - ' : ''}${safeTitle}`;
   const watchStatus = movie.watch_status || '';
@@ -314,43 +595,68 @@ export async function saveWantedMovie(movie) {
       folderName,
       title,
       year,
-      movie.imdb_id || '',
-      movie.poster_url || '',
-      movie.director || '',
-      movie.cast_list || '',
-      movie.overview || '',
+      enriched.imdb_id || movie.imdb_id || '',
+      enriched.poster_url || movie.poster_url || '',
+      enriched.director || movie.director || '',
+      enriched.cast_list || movie.cast_list || '',
+      enriched.overview || movie.overview || '',
       movie.tags || '',
       watchStatus,
-      Number(movie.id || movie.tmdb_id) || 0
+      tmdbId
     ]
   );
+  await logActivity('Added Wanted', title, year ? String(year) : '');
 }
-
 
 export async function updateExistingMovie(oldFolderName, existing, movie, onDisk) {
   const db = await initDb();
-  const year = movie.year || existing?.year || '';
-  const safeTitle = movie.title.replace(/[/\\:]/g, ' -').trim();
-  const newFolderName = `${year} - ${safeTitle} [${(existing?.quality || '').trim()}]${movie.imdb_id?.trim() ? ` [imdbid-${movie.imdb_id.trim()}]` : ''}`;
 
-  if (existing?.status !== 'wanted' && onDisk && oldFolderName !== newFolderName) {
-    await rename(`${MEDIA_ROOT}/${oldFolderName}`, `${MEDIA_ROOT}/${newFolderName}`);
+  let enriched = movie;
+  const tmdbId = Number(movie.tmdb_id || movie.id) || 0;
+  if (tmdbId && (!movie.imdb_id || !movie.cast_list || !movie.director)) {
+    try {
+      const full = await fetchEnrichedMovie({ ...movie, id: tmdbId });
+      enriched = {
+        ...movie,
+        imdb_id: movie.imdb_id || full.imdb_id || '',
+        director: movie.director || full.director || '',
+        cast_list: movie.cast_list || full.cast_list || '',
+        overview: movie.overview || full.overview || '',
+        poster_url: movie.poster_url || full.poster_url || ''
+      };
+    } catch (_) {}
+  }
+
+  const year = enriched.year || existing?.year || '';
+  const safeTitle = enriched.title.replace(/[/\\:]/g, ' -').trim();
+  const newFolderName = `${year} - ${safeTitle} [${(existing?.quality || '').trim()}]${enriched.imdb_id?.trim() ? ` [imdbid-${enriched.imdb_id.trim()}]` : ''}`;
+  const oldRoot = getMediaRoot(existing);
+  const newRoot = getMediaRoot({ ...existing, ...enriched });
+
+  if (existing?.status !== 'wanted' && onDisk) {
+    const actualOldPath = (await exists(`${oldRoot}/${oldFolderName}`).catch(() => false))
+      ? `${oldRoot}/${oldFolderName}`
+      : `${MEDIA_ROOT}/${oldFolderName}`;
+    const targetNewPath = `${newRoot}/${newFolderName}`;
+    if (actualOldPath !== targetNewPath && (await exists(actualOldPath).catch(() => false))) {
+      await mkdir(newRoot, { recursive: true }).catch(() => {});
+      await rename(actualOldPath, targetNewPath);
+    }
   }
   await db.execute(
-    `UPDATE wishlist_videos SET folder_name=?, title=?, year=COALESCE(NULLIF(?,''),year), imdb_id=?, poster_url=?, director=?, cast_list=?, overview=? WHERE folder_name=?`,
-    [newFolderName, movie.title, year, movie.imdb_id, movie.poster_url, movie.director, movie.cast_list, movie.overview, oldFolderName]
+    `UPDATE wishlist_videos SET folder_name=?, title=?, year=COALESCE(NULLIF(?,''),year), imdb_id=?, poster_url=?, director=?, cast_list=?, overview=?, tmdb_id=COALESCE(NULLIF(?,0),tmdb_id) WHERE folder_name=?`,
+    [newFolderName, enriched.title, year, enriched.imdb_id || '', enriched.poster_url || '', enriched.director || '', enriched.cast_list || '', enriched.overview || '', tmdbId, oldFolderName]
   );
 
   if (existing?.status !== 'wanted' && onDisk) {
-    await writeJellyfinSidecars(`${MEDIA_ROOT}/${newFolderName}`, {
-      ...movie,
+    await writeJellyfinSidecars(`${newRoot}/${newFolderName}`, {
+      ...enriched,
       year,
       tags: existing?.tags || '',
       clips: existing?.clips || ''
     });
   }
 }
-
 
 export async function enrichFilmBatch(list) {
   const out = [];
@@ -737,8 +1043,14 @@ export async function updateMovieTagsAndClips(folderName, tags, clips) {
   const rows = await db.select("SELECT * FROM wishlist_videos WHERE folder_name = ?", [folderName]);
   const entry = rows.at(0);
   if (entry && entry.status !== 'wanted') {
+    const targetRoot = getMediaRoot(entry);
+    const otherRoot = targetRoot === MEDIA_ROOT ? THE_MOVIES_ROOT : MEDIA_ROOT;
+    if ((await exists(`${otherRoot}/${folderName}`).catch(() => false)) && !(await exists(`${targetRoot}/${folderName}`).catch(() => false))) {
+      await mkdir(targetRoot, { recursive: true }).catch(() => {});
+      await rename(`${otherRoot}/${folderName}`, `${targetRoot}/${folderName}`).catch(() => {});
+    }
     try {
-      await writeJellyfinSidecars(`${MEDIA_ROOT}/${folderName}`, entry);
+      await writeJellyfinSidecars(`${targetRoot}/${folderName}`, entry);
     } catch (_) {}
   }
 }
@@ -785,10 +1097,79 @@ export async function writeJellyfinSidecars(folderPath, entry) {
   }
 }
 
+async function writeEntrySidecars(entry) {
+  const isTv = entry.media_type === 'tv';
+  if (isTv) {
+    let eps = [];
+    try {
+      eps = entry.episodes_json ? JSON.parse(entry.episodes_json) : [];
+    } catch (_) {}
+    await writeJellyfinTvSidecars(`${TV_ROOT}/${entry.folder_name}`, entry, eps);
+  } else {
+    await writeJellyfinSidecars(`${getMediaRoot(entry)}/${entry.folder_name}`, entry);
+  }
+}
+
+export async function scanMissingSidecarsOnDisk(databaseEntries, diskFolders) {
+  const onDiskEntries = (databaseEntries || []).filter(
+    e => e.folder_name && diskFolders.includes(e.folder_name)
+  );
+  const missing = [];
+
+  for (let i = 0; i < onDiskEntries.length; i += 10) {
+    const batch = onDiskEntries.slice(i, i + 10);
+    await Promise.all(
+      batch.map(async (entry) => {
+        try {
+          const base = getMediaRoot(entry);
+          const entries = await readDir(`${base}/${entry.folder_name}`);
+          const names = entries.map(f => f.name.toLowerCase());
+          const hasPoster = names.includes('poster.jpg') || names.includes('poster.png');
+          const hasNfo = names.some(n => n.endsWith('.nfo'));
+          if (!hasPoster || !hasNfo) {
+            missing.push({
+              ...entry,
+              missingFiles: [!hasPoster ? 'poster.jpg' : '', !hasNfo ? '.nfo' : ''].filter(Boolean).join(', ')
+            });
+          }
+        } catch (_) {}
+      })
+    );
+  }
+  return missing;
+}
+
+export async function syncMissingJellyfinSidecars(entries, onProgress) {
+  const list = entries || [];
+  let done = 0;
+  let written = 0;
+  let firstError = '';
+
+  for (let i = 0; i < list.length; i += 5) {
+    const batch = list.slice(i, i + 5);
+    await Promise.all(
+      batch.map(async (entry) => {
+        try {
+          await writeEntrySidecars(entry);
+          written += 1;
+        } catch (err) {
+          if (!firstError) firstError = `${entry.folder_name}: ${err}`;
+        }
+        done += 1;
+        onProgress?.(done, list.length);
+      })
+    );
+  }
+
+  if (firstError && written === 0) throw new Error(firstError);
+  await logActivity('Wrote Missing Metafiles', written + ' folders updated', '');
+  return { written, total: list.length, firstError };
+}
+
 export async function syncAllJellyfinSidecars(diskFolders, onProgress) {
   const db = await initDb();
-  const rows = await db.select("SELECT * FROM wishlist_videos WHERE status != 'wanted' ORDER BY title ASC");
-  const onDisk = rows.filter(r => diskFolders.includes(r.folder_name));
+  const rows = await db.select("SELECT * FROM wishlist_videos ORDER BY title ASC");
+  const onDisk = rows.filter(r => r.folder_name && diskFolders.includes(r.folder_name));
 
   let done = 0;
   let written = 0;
@@ -799,7 +1180,7 @@ export async function syncAllJellyfinSidecars(diskFolders, onProgress) {
     await Promise.all(
       batch.map(async (entry) => {
         try {
-          await writeJellyfinSidecars(`${MEDIA_ROOT}/${entry.folder_name}`, entry);
+          await writeEntrySidecars(entry);
           written += 1;
         } catch (err) {
           if (!firstError) firstError = `${entry.folder_name}: ${err}`;
@@ -811,6 +1192,7 @@ export async function syncAllJellyfinSidecars(diskFolders, onProgress) {
   }
 
   if (firstError && written === 0) throw new Error(firstError);
+  await logActivity('Rewrote Metafiles', written + ' folders updated', '');
   return { written, total: onDisk.length, firstError };
 }
 
@@ -861,7 +1243,8 @@ async function resolveTmdbId(movie) {
 export async function fetchMovieDetails(movie) {
   const isTv = movie?.media_type === 'tv';
   const kind = isTv ? 'tv' : 'movie';
-  const id = isTv ? (movie.tmdb_id || movie.id || await resolveTmdbId(movie)) : (movie.tmdb_id || movie.id || await resolveTmdbId(movie));
+  const rawTmdbId = movie.tmdb_id || (!movie.folder_name && movie.status !== 'wanted' ? movie.id : 0);
+  const id = rawTmdbId || await resolveTmdbId(movie);
   if (!id) return null;
 
   const host = ["api", "themoviedb", "org"].join(".");
@@ -944,24 +1327,24 @@ export async function fetchMovieKeywords(movie) {
   return [...new Set([...genres, ...keywords])];
 }
 
-
-export async function getMovieFolderFiles(folderName, root = MEDIA_ROOT) {
+export async function getMovieFolderFiles(folderName, root = THE_MOVIES_ROOT) {
   try {
-    const entries = await readDir(`${root}/${folderName}`);
-    return entries.filter(e => e.isFile && !e.name.startsWith('.')).map(e => e.name).sort();
+    let entries = await readDir(`${root}/${folderName}`).catch(() => null);
+    if (!entries && root !== MEDIA_ROOT) {
+      entries = await readDir(`${MEDIA_ROOT}/${folderName}`).catch(() => null);
+    }
+    return (entries || []).filter(e => e.isFile && !e.name.startsWith('.')).map(e => e.name).sort();
   } catch (_) {
     return [];
   }
 }
 
-
-export const DELETED_ROOT = "/Volumes/4TB0-SEAGATE/jelly/deleted";
-
 export async function removeMovieFromLibrary(folderName, isOnDisk = false) {
   const db = await initDb();
-  const rows = await db.select("SELECT media_type FROM wishlist_videos WHERE folder_name = ?", [folderName]);
-  const rootDir = rows.at(0)?.media_type === 'tv' ? TV_ROOT : MEDIA_ROOT;
-  const sourcePath = `${rootDir}/${folderName}`;
+  const rows = await db.select("SELECT media_type, tags FROM wishlist_videos WHERE folder_name = ?", [folderName]);
+  const sourcePath = (await exists(`${rootDir}/${folderName}`).catch(() => false))
+    ? `${rootDir}/${folderName}`
+    : `${MEDIA_ROOT}/${folderName}`;
 
   if (isOnDisk && folderName && await exists(sourcePath).catch(() => false)) {
     try {
@@ -978,15 +1361,23 @@ export async function removeMovieFromLibrary(folderName, isOnDisk = false) {
 
     await rename(sourcePath, destPath);
   }
-
   await db.execute("DELETE FROM wishlist_videos WHERE folder_name = ?", [folderName]);
+  await logActivity('Removed', folderName, '');
 }
 
 export async function updateMovieWatchStatus(folderName, watchStatus) {
   const db = await initDb();
+  const prevRows = await db.select(`SELECT title, year, watch_status FROM wishlist_videos WHERE folder_name = ?`, [folderName]);
+  const prev = prevRows.at(0);
   await db.execute(
     `UPDATE wishlist_videos SET watch_status = ? WHERE folder_name = ?`,
     [watchStatus || '', folderName]
+  );
+  const label = prev ? `${prev.title}${prev.year ? ` (${prev.year})` : ''}` : folderName;
+  await logActivity(
+    'Watch Status',
+    label,
+    `${formatWatchLabel(prev?.watch_status || '')} → ${formatWatchLabel(watchStatus || '')}`
   );
 }
 
@@ -1254,34 +1645,75 @@ export async function fetchTvSeasonDetails(tvId, seasonNumber) {
   };
 }
 
-export function parseLooseTvFilename(fileName) {
-  const noExt = fileName.replace(/\.[^.]+$/, '');
-  const clean = noExt.replace(/[._]+/g, ' ').replace(/\s+/g, ' ').trim();
+function parseFallbackShowFolder(folderName) {
+  const cleanFolder = String(folderName || '').replace(/[._]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!cleanFolder) return null;
+  const generic = new Set(['downloads', 'desktop', 'documents', 'movies', 'videos', 'tv', 'tv shows', 'incoming', 'media', 'temp', 'tmp']);
+  if (generic.has(cleanFolder.toLowerCase())) return null;
 
-  // Matches: "S02E03", "s02 e03", "2x03", or "season 1 episode 1" / "season1 ep01"
-  const m = clean.match(/^(.*?)\b(?:s(\d{1,2})\s*e(\d{1,3})|(\d{1,2})x(\d{1,3})|season\s*0*(\d{1,2})\s*(?:episode|ep|e)\s*0*(\d{1,3}))\b/i);
-  if (!m) return null;
-
-  const rawTitle = (m[1] || '').replace(/[-–:\s]+$/, '').trim();
-  const seasonNum = Number(m[2] || m[4] || m[6]) || 1;
-  const epNum = Number(m[3] || m[5] || m[7]) || 1;
-  if (!rawTitle) return null;
-
-  const yearMatch = rawTitle.match(/\(?((?:19|20)\d{2})\)?$/);
-  const year = yearMatch ? yearMatch[1] : '';
+  let seasonNum = 1;
+  let working = cleanFolder;
+  const seasonMatch = working.match(/(?:[-–:]\s*)?(?:season|series|s)\s*0*(\d{1,2})\b/i);
+  if (seasonMatch) {
+    seasonNum = Number(seasonMatch.at(1)) || 1;
+    working = working.replace(seasonMatch, ' ').replace(/[-–:\s]+$/, '').trim();
+  }
+  const yearMatch = working.match(/\(?((?:19|20)\d{2})(?:\s*series)?\)?$/i);
+  const year = yearMatch ? yearMatch.at(1) : '';
   const title = yearMatch
-    ? rawTitle.replace(/\(?((?:19|20)\d{2})\)?$/, '').replace(/[-–:\s]+$/, '').trim()
-    : rawTitle;
-
-  return {
-    title,
-    year,
-    season_number: seasonNum,
-    episode_number: epNum,
-    normKey: `${title.toLowerCase().replace(/[^a-z0-9]+/g, '')}::s${seasonNum}`
-  };
+    ? working.replace(/\(?((?:19|20)\d{2})(?:\s*series)?\)?$/i, '').replace(/[-–:\s]+$/, '').trim()
+    : working;
+  if (!title) return null;
+  return { title, year, season_number: seasonNum };
 }
 
+export function parseLooseTvFilename(fileName, fallbackFolderName = '') {
+  const noExt = fileName.replace(/\.[^.]+$/, '');
+  const clean = noExt.replace(/[._]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const fallback = parseFallbackShowFolder(fallbackFolderName);
+
+  const m = clean.match(/^(.*?)\b(?:s(\d{1,2})\s*e(\d{1,3})|(\d{1,2})x(\d{1,3})|season\s*0*(\d{1,2})\s*(?:episode|ep|e)\s*0*(\d{1,3})|(?:episode|ep)\.?\s*0*(\d{1,3}))\b/i);
+  if (m) {
+    const rawTitle = (m.at(1) || '').replace(/[-–:\s]+$/, '').trim();
+    const seasonNum = Number(m.at(2) || m.at(4) || m.at(6)) || fallback?.season_number || 1;
+    const epNum = Number(m.at(3) || m.at(5) || m.at(7) || m.at(8)) || 1;
+    const resolvedRaw = rawTitle || (fallback ? `${fallback.title}${fallback.year ? ` (${fallback.year})` : ''}` : '');
+    if (!resolvedRaw) return null;
+
+    const yearMatch = resolvedRaw.match(/\(?((?:19|20)\d{2})(?:\s*series)?\)?$/i);
+    const year = yearMatch ? yearMatch.at(1) : (fallback?.year || '');
+    const title = yearMatch
+      ? resolvedRaw.replace(/\(?((?:19|20)\d{2})(?:\s*series)?\)?$/i, '').replace(/[-–:\s]+$/, '').trim()
+      : resolvedRaw;
+
+    return {
+      title,
+      year,
+      season_number: seasonNum,
+      episode_number: epNum,
+      normKey: `${title.toLowerCase().replace(/[^a-z0-9]+/g, '')}::s${seasonNum}`
+    };
+  }
+
+  if (fallback) {
+    const leadMatch = clean.match(/^0*(\d{1,2})(?:\s*[-–.)]\s*|\s+)(.+)$/);
+    if (leadMatch) {
+      const epNum = Number(leadMatch.at(1));
+      const rest = (leadMatch.at(2) || '').trim();
+      if (epNum >= 1 && epNum <= 99 && rest && !/^(?:19|20)\d{2}\b/.test(clean)) {
+        return {
+          title: fallback.title,
+          year: fallback.year,
+          season_number: fallback.season_number,
+          episode_number: epNum,
+          normKey: `${fallback.title.toLowerCase().replace(/[^a-z0-9]+/g, '')}::s${fallback.season_number}`
+        };
+      }
+    }
+  }
+
+  return null;
+}
 
 export async function saveTvSeasonToLibrary(item, entry) {
   const db = await initDb();
@@ -1302,16 +1734,18 @@ export async function saveTvSeasonToLibrary(item, entry) {
   // Move files from grouped loose files (item.files), single file, or season directory into destFolder
   if (Array.isArray(item.files) && item.files.length > 0) {
     for (const f of item.files) {
-      if (f.sourcePath && f.sourcePath !== `${destFolder}/${f.name}`) {
-        await rename(f.sourcePath, `${destFolder}/${f.name}`);
+      const targetPath = `${destFolder}/${f.name}`;
+      if (f.sourcePath && f.sourcePath !== targetPath && !(await exists(targetPath))) {
+        await rename(f.sourcePath, targetPath);
       }
     }
   } else if (item.sourcePath && item.sourcePath !== destFolder) {
     if (item.isDirectory) {
       const srcEntries = await readDir(item.sourcePath).catch(() => []);
       for (const f of srcEntries) {
-        if (f.isFile && !f.name.startsWith('.')) {
-          await rename(`${item.sourcePath}/${f.name}`, `${destFolder}/${f.name}`);
+        const targetPath = `${destFolder}/${f.name}`;
+        if (f.isFile && !f.name.startsWith('.') && !(await exists(targetPath))) {
+          await rename(`${item.sourcePath}/${f.name}`, targetPath);
         }
       }
       const leftover = await readDir(item.sourcePath).catch(() => []);
@@ -1319,11 +1753,15 @@ export async function saveTvSeasonToLibrary(item, entry) {
         await remove(item.sourcePath, { recursive: true }).catch(() => {});
       }
     } else {
-      await rename(item.sourcePath, `${destFolder}/${item.name}`);
+      const targetPath = `${destFolder}/${item.name}`;
+      if (!(await exists(targetPath))) {
+        await rename(item.sourcePath, targetPath);
+      }
     }
   }
 
   // Rename episode video files inside destFolder to: Show Name - s03e02 - Episode Title.ext
+  const renamedFilesByEp = new Map();
   const dirEntries = await readDir(destFolder).catch(() => []);
   for (const file of dirEntries) {
     if (!file.isFile || file.name.startsWith('.')) continue;
@@ -1332,21 +1770,30 @@ export async function saveTvSeasonToLibrary(item, entry) {
     const ext = file.name.slice(dotIdx + 1).toLowerCase();
     if (!videoExts.has(ext)) continue;
 
-    const match = file.name.match(/s\d{1,2}\s*e(\d{1,3})/i)
+    const match = file.name.match(/s\d{1,2}[\s._-]*e(\d{1,3})/i)
       || file.name.match(/\b\d{1,2}x(\d{1,3})\b/i)
-      || file.name.match(/\b(?:episode|ep|e)\s*0*(\d{1,3})\b/i);
+      || file.name.match(/\b(?:episode|ep|e)\.?\s*0*(\d{1,3})\b/i)
+      || file.name.match(/^0*(\d{1,2})(?:[\s._-]+|$)/);
     if (!match) continue;
 
-    const epNum = Number(match[1]);
+    const epNum = Number(match.at(1));
+    if (!Number.isInteger(epNum) || epNum <= 0) continue;
+
     const epMeta = epMap.get(epNum);
     const ePad = String(epNum).padStart(2, '0');
     const safeEpTitle = (epMeta?.name || `Episode ${epNum}`).replace(/[/\\:*?"<>|]/g, ' -').trim();
     const newFileName = `${safeShow} - s${sPad}e${ePad} - ${safeEpTitle}.${ext}`;
 
     if (file.name !== newFileName) {
-      await rename(`${destFolder}/${file.name}`, `${destFolder}/${newFileName}`);
+      const targetPath = `${destFolder}/${newFileName}`;
+      if (await exists(targetPath)) {
+        // Never overwrite an existing episode file on disk
+        continue;
+      }
+      await rename(`${destFolder}/${file.name}`, targetPath);
     }
     if (epMeta) epMeta.file_name = newFileName;
+    renamedFilesByEp.set(epNum, newFileName);
     movedEpNums.add(epNum);
   }
 
@@ -1375,11 +1822,12 @@ export async function saveTvSeasonToLibrary(item, entry) {
   const mergedEpisodes = allEpNums.map(epNum => {
     const fresh = epMap.get(epNum) || {};
     const old = prevByNum.get(epNum) || {};
-    const finalFile = fresh.file_name || old.file_name || '';
+    const alreadyOwned = Boolean(old.file_name);
+    const finalFile = renamedFilesByEp.get(epNum) || fresh.file_name || old.file_name || '';
 
-    const epWatch = movedEpNums.has(epNum)
-      ? (bulkWatch || old.watch_status || '')
-      : (old.watch_status || '');
+    const epWatch = alreadyOwned
+      ? (old.watch_status || '')
+      : (fresh.watch_status || (movedEpNums.has(epNum) ? (bulkWatch || old.watch_status || '') : (old.watch_status || '')));
 
     return {
       episode_number: epNum,
@@ -1426,8 +1874,8 @@ export async function saveTvSeasonToLibrary(item, entry) {
       Number(entry.tmdb_id) || existing?.tmdb_id || 0
     ]
   );
-
-
+  const epCount = mergedEpisodes.filter(e => e.file_name).length;
+  await logActivity('Imported TV Season', entry.title + ' · Season ' + seasonNum, epCount + ' episode files');
   await writeJellyfinTvSidecars(destFolder, {
     ...entry,
     season_number: seasonNum,
@@ -1435,37 +1883,169 @@ export async function saveTvSeasonToLibrary(item, entry) {
   }, mergedEpisodes);
 }
 
+export async function fetchEnrichedTvShow(tvId) {
+  const host = ["api", "themoviedb", "org"].join(".");
+  const path = ["3", "tv", tvId].join("/");
+  const url = new URL(`https://${host}/${path}`);
+  url.searchParams.set("api_key", TMDB_API_KEY);
+  url.searchParams.set("append_to_response", "aggregate_credits,credits,external_ids");
 
-export async function saveWantedTvSeason(show, seasonNumber = 1) {
+  const res = await tauriFetch(url.toString(), { method: 'GET', headers: { 'Accept': 'application/json' } });
+  const d = await res.json();
+  const aggCast = d.aggregate_credits?.cast || d.credits?.cast || [];
+  const posterBase = ["https:/", "image.tmdb.org", "t", "p", "w300"].join("/");
+  return {
+    imdb_id: d.external_ids?.imdb_id || '',
+    cast_list: aggCast.slice(0, 6).map(c => c.name).join(', '),
+    director: Array.isArray(d.created_by) ? d.created_by.map(c => c.name).join(', ') : '',
+    overview: d.overview || '',
+    poster_url: d.poster_path ? posterBase + d.poster_path : ''
+  };
+}
+
+export async function saveWantedTvSeason(show, seasonNumber = 1, opts = {}) {
   const db = await initDb();
   const seasonNum = Number(seasonNumber) || 1;
+  let tvId = Number(show.tmdb_id || show.show_id || show.id) || 0;
+
+  if (!tvId && show.title) {
+    try {
+      const tvHits = await searchTmdbTv(show.title, show.year ? String(show.year) : '');
+      if (tvHits.length > 0) tvId = Number(tvHits.at(0).id) || 0;
+    } catch (_) {}
+  }
+
   const sPad = String(seasonNum).padStart(2, '0');
-  const seasonData = await fetchTvSeasonDetails(show.id, seasonNum).catch(() => ({}));
+  const seasonData = tvId ? await fetchTvSeasonDetails(tvId, seasonNum).catch(() => ({})) : {};
+  const tvMeta = tvId ? await fetchEnrichedTvShow(tvId).catch(() => ({})) : {};
+
   const safeShow = show.title.replace(/[/\\:]/g, ' -').trim();
   const seasonYear = seasonData.air_date
     ? Number(seasonData.air_date.slice(0, 4))
     : (Number(show.year) || 0);
   const cleanFolderName = `${seasonYear ? seasonYear + ' - ' : ''}${safeShow} - s${sPad}`;
 
+  const initWatch = opts.watch_status ?? show.watch_status ?? '';
+  const initTags = opts.tags ?? show.tags ?? '';
+  const episodes = (seasonData.episodes || []).map(ep => ({
+    ...ep,
+    file_name: '',
+    watch_status: initWatch,
+    tags: '',
+    clips: ''
+  }));
+
   await db.execute(
     `INSERT OR REPLACE INTO wishlist_videos (
-      folder_name, title, year, quality, imdb_id, poster_url, director, cast_list, overview,
+      folder_name, title, year, quality, imdb_id, poster_url, director, cast_list, overview, tags,
       watch_status, status, media_type, season_number, episodes_json, tmdb_id
-    ) VALUES (?, ?, ?, '', ?, ?, '', ?, ?, '', 'wanted', 'tv', ?, ?, ?)`,
+    ) VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, 'wanted', 'tv', ?, ?, ?)`,
     [
       cleanFolderName,
       show.title.trim(),
       seasonYear,
-      seasonData.imdb_id || '',
-      seasonData.poster_url || show.poster_url || '',
-      seasonData.cast_list || '',
-      seasonData.overview || show.overview || '',
+      seasonData.imdb_id || show.imdb_id || tvMeta.imdb_id || '',
+      seasonData.poster_url || show.poster_url || tvMeta.poster_url || '',
+      show.director || tvMeta.director || '',
+      seasonData.cast_list || show.cast_list || tvMeta.cast_list || '',
+      seasonData.overview || show.overview || tvMeta.overview || '',
+      initTags,
+      initWatch,
       seasonNum,
-      JSON.stringify(seasonData.episodes || []),
-      Number(show.id) || 0
+      JSON.stringify(episodes),
+      tvId
     ]
   );
+  await logActivity('Added Wanted TV', show.title.trim() + ' · Season ' + seasonNum, seasonYear ? String(seasonYear) : '');
 }
+
+export async function backfillMissingTvMetadata() {
+  const db = await initDb();
+  const missingRows = await db.select(
+    `SELECT id, tmdb_id, title, year, imdb_id, cast_list, director FROM wishlist_videos
+     WHERE media_type = 'tv' AND (imdb_id IS NULL OR imdb_id = '' OR cast_list IS NULL OR cast_list = '')`
+  );
+  if (missingRows.length === 0) return false;
+
+  const cache = new Map();
+  let updatedAny = false;
+
+  for (const row of missingRows) {
+    let tvId = Number(row.tmdb_id) || 0;
+    if (!tvId && row.title) {
+      const hits = await searchTmdbTv(row.title, row.year ? String(row.year) : '').catch(() => []);
+      if (hits.length > 0) tvId = Number(hits.at(0).id) || 0;
+    }
+    if (!tvId) continue;
+
+    let meta = cache.get(tvId);
+    if (!meta) {
+      meta = await fetchEnrichedTvShow(tvId).catch(() => null);
+      if (meta) cache.set(tvId, meta);
+    }
+    if (!meta) continue;
+
+    const nextImdb = row.imdb_id || meta.imdb_id || '';
+    const nextCast = row.cast_list || meta.cast_list || '';
+    const nextDir = row.director || meta.director || '';
+    if (nextImdb !== (row.imdb_id || '') || nextCast !== (row.cast_list || '') || tvId !== Number(row.tmdb_id || 0)) {
+      await db.execute(
+        `UPDATE wishlist_videos SET tmdb_id = ?, imdb_id = ?, cast_list = ?, director = ? WHERE id = ?`,
+        [tvId, nextImdb, nextCast, nextDir, row.id]
+      );
+      updatedAny = true;
+    }
+  }
+  return updatedAny;
+}
+
+export async function backfillMissingMovieMetadata() {
+  const db = await initDb();
+  const missingRows = await db.select(
+    `SELECT id, tmdb_id, title, year, imdb_id, cast_list, director, overview, poster_url FROM wishlist_videos
+     WHERE (media_type IS NULL OR media_type = 'movie')
+       AND (imdb_id IS NULL OR imdb_id = '' OR cast_list IS NULL OR cast_list = '')`
+  );
+  if (missingRows.length === 0) return false;
+
+  let updatedAny = false;
+  for (const row of missingRows) {
+    let tmdbId = Number(row.tmdb_id) || 0;
+    if (!tmdbId && row.title) {
+      const hits = await searchTmdb(row.title, row.year ? String(row.year) : '', row.director || '').catch(() => []);
+      if (hits.length > 0) tmdbId = Number(hits.at(0).id) || 0;
+    }
+    if (!tmdbId) continue;
+
+    const meta = await fetchEnrichedMovie({
+      id: tmdbId,
+      title: row.title,
+      release_date: row.year ? `${row.year}-01-01` : '',
+      poster_path: ''
+    }).catch(() => null);
+    if (!meta) continue;
+
+    const nextImdb = row.imdb_id || meta.imdb_id || '';
+    const nextCast = row.cast_list || meta.cast_list || '';
+    const nextDir = row.director || meta.director || '';
+    const nextOver = row.overview || meta.overview || '';
+    const nextPoster = row.poster_url || meta.poster_url || '';
+
+    if (
+      nextImdb !== (row.imdb_id || '') ||
+      nextCast !== (row.cast_list || '') ||
+      tmdbId !== Number(row.tmdb_id || 0)
+    ) {
+      await db.execute(
+        `UPDATE wishlist_videos SET tmdb_id = ?, imdb_id = ?, cast_list = ?, director = ?, overview = ?, poster_url = ? WHERE id = ?`,
+        [tmdbId, nextImdb, nextCast, nextDir, nextOver, nextPoster, row.id]
+      );
+      updatedAny = true;
+    }
+  }
+  return updatedAny;
+}
+
 export async function writeJellyfinTvSidecars(folderPath, entry, episodes = []) {
   const esc = (s) => String(s || '')
     .replace(/&/g, '&amp;')
@@ -1523,21 +2103,48 @@ export async function writeJellyfinTvSidecars(folderPath, entry, episodes = []) 
     await writeTextFile(`${folderPath}/${baseName}.nfo`, epXml);
   }
 }
+
 export async function updateSeasonEpisodes(folderName, episodes) {
   const db = await initDb();
+  const prevRows = await db.select(`SELECT * FROM wishlist_videos WHERE folder_name = ?`, [folderName]);
+  const prevEntry = prevRows.at(0);
+  let prevEps = [];
+  try {
+    prevEps = prevEntry?.episodes_json ? JSON.parse(prevEntry.episodes_json) : [];
+  } catch (_) {}
+
   const rolledWatch = computeSeasonWatchStatus(episodes);
   await db.execute(
     `UPDATE wishlist_videos SET episodes_json = ?, watch_status = ? WHERE folder_name = ?`,
     [JSON.stringify(episodes), rolledWatch, folderName]
   );
 
-  const rows = await db.select(`SELECT * FROM wishlist_videos WHERE folder_name = ?`, [folderName]);
-  const entry = rows.at(0);
-  if (entry && entry.status !== 'wanted') {
-    const destFolder = `${TV_ROOT}/${folderName}`;
-    if (await exists(destFolder)) {
-      await writeJellyfinTvSidecars(destFolder, entry, episodes);
+  const changedDetails = [];
+  for (const ep of episodes) {
+    const oldEp = prevEps.find(p => Number(p.episode_number) === Number(ep.episode_number));
+    const oldWs = oldEp?.watch_status || '';
+    const newWs = ep.watch_status || '';
+    if (oldWs !== newWs) {
+      changedDetails.push(`Ep ${ep.episode_number}: ${formatWatchLabel(oldWs)} → ${formatWatchLabel(newWs)}`);
     }
+  }
+  if (changedDetails.length > 0) {
+    const showLabel = prevEntry
+      ? `${prevEntry.title}${prevEntry.season_number ? ` S${String(prevEntry.season_number).padStart(2, '0')}` : ''}`
+      : folderName;
+    await logActivity('Episode Status', showLabel, changedDetails.join(', '));
+  }
+
+  try {
+    const entry = prevEntry ? { ...prevEntry, episodes_json: JSON.stringify(episodes), watch_status: rolledWatch } : null;
+    if (entry && entry.status !== 'wanted') {
+      const destFolder = `${TV_ROOT}/${folderName}`;
+      if (await exists(destFolder)) {
+        await writeJellyfinTvSidecars(destFolder, entry, episodes);
+      }
+    }
+  } catch (err) {
+    console.warn('TV sidecar sync warning:', err);
   }
 }
 
@@ -1550,6 +2157,69 @@ export function computeSeasonWatchStatus(episodes = []) {
   return 'unfinished';
 }
 
+export async function reconcileTvEpisodesOnDisk() {
+  const db = await initDb();
+  const tvRows = await db.select(`SELECT * FROM wishlist_videos WHERE media_type = 'tv'`);
+  const videoExts = new Set(['mp4', 'mkv', 'avi', 'mov', 'm4v', 'wmv', 'ts', 'webm']);
+
+  for (const row of tvRows) {
+    if (!row.folder_name) continue;
+    let episodes = [];
+    try {
+      episodes = row.episodes_json ? JSON.parse(row.episodes_json) : [];
+    } catch (_) {
+      episodes = [];
+    }
+    if (!Array.isArray(episodes) || episodes.length === 0) continue;
+
+    const folderPath = `${TV_ROOT}/${row.folder_name}`;
+    const dirEntries = await readDir(folderPath).catch(() => null);
+    const actualFilesByEp = new Map();
+
+    if (Array.isArray(dirEntries)) {
+      for (const f of dirEntries) {
+        if (!f.isFile || f.name.startsWith('.')) continue;
+        const dotIdx = f.name.lastIndexOf('.');
+        if (dotIdx === -1) continue;
+        const ext = f.name.slice(dotIdx + 1).toLowerCase();
+        if (!videoExts.has(ext)) continue;
+
+        const noExt = f.name.replace(/\.[^.]+$/, '');
+        const m = noExt.match(/s\d{1,2}[\s._-]*e(\d{1,3})/i)
+          || noExt.match(/\b\d{1,2}x(\d{1,3})\b/i)
+          || noExt.match(/\b(?:episode|ep|e)\.?\s*0*(\d{1,3})\b/i)
+          || (!/^(?:19|20)\d{2}\b/.test(noExt.trim()) && noExt.trim().match(/^0*(\d{1,3})(?:[\s._-]+|$)/));
+        const epNum = m ? Number(m.at(1)) : 0;
+        if (Number.isInteger(epNum) && epNum > 0 && !actualFilesByEp.has(epNum)) {
+          actualFilesByEp.set(epNum, f.name);
+        }
+      }
+    }
+
+    let changed = false;
+    const updatedEpisodes = episodes.map(ep => {
+      const num = Number(ep.episode_number);
+      const diskFile = actualFilesByEp.get(num) || '';
+      if ((ep.file_name || '') !== diskFile) {
+        changed = true;
+        return { ...ep, file_name: diskFile };
+      }
+      return ep;
+    });
+
+    const totalEps = updatedEpisodes.length;
+    const ownedEps = updatedEpisodes.filter(ep => Boolean(ep.file_name)).length;
+    const nextStatus = (totalEps > 0 && ownedEps >= totalEps) ? 'owned' : 'wanted';
+
+    if (changed || row.status !== nextStatus) {
+      await db.execute(
+        `UPDATE wishlist_videos SET episodes_json = ?, status = ? WHERE folder_name = ?`,
+        [JSON.stringify(updatedEpisodes), nextStatus, row.folder_name]
+      );
+    }
+  }
+}
+
 export async function exportCatalogToJson() {
   const db = await initDb();
   const rows = await db.select(`SELECT * FROM wishlist_videos ORDER BY title ASC, year ASC, season_number ASC`);
@@ -1559,7 +2229,7 @@ export async function exportCatalogToJson() {
 
   for (const row of rows) {
     const isTv = row.media_type === 'tv';
-    const rootDir = isTv ? TV_ROOT : MEDIA_ROOT;
+    const rootDir = getMediaRoot(row);
     const folderPath = row.folder_name ? `${rootDir}/${row.folder_name}` : '';
     const onDisk = row.status !== 'wanted' && folderPath ? await exists(folderPath).catch(() => false) : false;
 
@@ -1640,4 +2310,71 @@ export async function exportCatalogToJson() {
     tv_seasons_count: exportedItems.filter(i => i.media_type === 'tv').length,
     items: exportedItems
   };
+}
+
+export async function resolveLocalMediaPath(fullPath) {
+  if (!fullPath) return fullPath;
+  if (fullPath.startsWith('/Volumes/4TB0-SEAGATE/jelly')) {
+    const remote = await getRemoteServer();
+    if (remote) {
+      return fullPath.replace('/Volumes/4TB0-SEAGATE/jelly', '/Volumes/jelly');
+    }
+  }
+  return fullPath;
+}
+
+export async function mountSharedDrive() {
+  const { invoke } = await import('@tauri-apps/api/core');
+  return await invoke('mount_shared_drive');
+}
+
+export async function playInVlc(folderName, specificFileName = '', isTv = false) {
+  if (!folderName) return;
+  try {
+  let rootDir = isTv ? TV_ROOT : THE_MOVIES_ROOT;
+  if (!isTv && !(await exists(`${rootDir}/${folderName}`).catch(() => false))) {
+    rootDir = MEDIA_ROOT;
+  }
+  const folderPath = `${rootDir}/${folderName}`;
+  let targetPath = '';
+
+  if (specificFileName) {
+    targetPath = `${folderPath}/${specificFileName}`;
+  } else {
+    const entries = await readDir(folderPath);
+    const videoFile = entries
+      .filter(e => {
+        if (!e.isFile) return false;
+        const lower = e.name.toLowerCase();
+        return VIDEO_EXTS.some(ext => lower.endsWith(ext)) && !/trailer|sample/i.test(lower);
+      })
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .at(0);
+    if (!videoFile) {
+      throw new Error(`No video file found in ${folderName}`);
+    }
+    targetPath = `${folderPath}/${videoFile.name}`;
+  }
+
+  if (typeof window !== 'undefined' && !window.__TAURI_INTERNALS__) {
+    const streamUrl = `${GUPPY_CONFIG.serverUrl}/stream?path=${encodeURIComponent(targetPath)}`;
+    const fileName = targetPath.split('/').pop() || folderName;
+    window.dispatchEvent(new CustomEvent('guppy:stream', { detail: { url: streamUrl, title: fileName } }));
+    return;
+  }
+
+  targetPath = await resolveLocalMediaPath(targetPath);
+
+  try {
+    await openPath(targetPath, 'VLC');
+  } catch (_) {
+    try {
+      await openPath(targetPath);
+    } catch (err) {
+      alert(`Could not play video: ${err}`);
+    }
+  }
+  } catch (err) {
+    alert(`Could not start playback: ${err?.message || err}`);
+  }
 }

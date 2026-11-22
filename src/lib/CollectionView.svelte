@@ -1,11 +1,9 @@
 <script>
   import LoggedCard from '$lib/LoggedCard.svelte';
 
-  export let allEntries = [];
   export let databaseEntries = [];
   export let diskFolders = [];
   export let searchResults = {};
-  export let watchFilter = 'all';
   export let onLookup;
   export let onWikiLookup;
   export let onSelect;
@@ -15,9 +13,9 @@
   export let onWatchStatus;
   export let onOpenMovie;
   export let typeFilter = 'all';
+  export let searchFilter = '';
+  export let collectionFilter = 'all';
 
-  let searchFilter = '';
-  let collectionFilter = 'all';
   let layoutMode = 'cards';
   let sortBy = 'recent';
 
@@ -42,15 +40,6 @@
     ].some(v => v?.toLowerCase().includes(q));
   }
 
-  $: countPool = (allEntries.length > 0 ? allEntries : databaseEntries).filter(item =>
-    matchesBaseFilters(item, typeFilter, collectionFilter, searchFilter)
-  );
-  $: listedCount = countPool.length;
-  $: unwatchedCount = countPool.filter(i => !i.watch_status || i.watch_status === '').length;
-  $: unfinishedCount = countPool.filter(i => i.watch_status === 'unfinished').length;
-  $: likedCount = countPool.filter(i => i.watch_status === 'liked').length;
-  $: hatedCount = countPool.filter(i => i.watch_status === 'disliked').length;
-
   $: filtered = databaseEntries.filter(item =>
     matchesBaseFilters(item, typeFilter, collectionFilter, searchFilter)
   );
@@ -71,62 +60,34 @@
 
 <section class="collection-section">
   <div class="section-bar">
-    <h2 class="watch-status-bar">
-      <span class="heading-dot" aria-hidden="true">
-        {#if watchFilter === 'all'}
-          <svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="5" fill="#111" /></svg>
-        {:else if watchFilter === 'unseen'}
-          <svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="4.25" fill="#fffff8" stroke="#111" stroke-width="1.5" /></svg>
-        {:else if watchFilter === 'liked'}
-          <svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="5" fill="#2b7a3d" /></svg>
-        {:else if watchFilter === 'disliked'}
-          <svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="5" fill="#9e2a2b" /></svg>
-        {:else}
-          <svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="5" fill="#8a8578" /></svg>
-        {/if}
-      </span>
-
-      <button
-        type="button"
-        class="status-filter-link"
-        class:active={watchFilter === 'all'}
-        on:click={() => { watchFilter = 'all'; }}
-      >{listedCount} Listed</button><span class="sep">,</span>
-
-      <button
-        type="button"
-        class="status-filter-link"
-        class:active={watchFilter === 'unseen'}
-        on:click={() => { watchFilter = 'unseen'; }}
-      >{unwatchedCount} Unwatched</button><span class="sep">,</span>
-
-      <button
-        type="button"
-        class="status-filter-link"
-        class:active={watchFilter === 'unfinished'}
-        on:click={() => { watchFilter = 'unfinished'; }}
-      >{unfinishedCount} Unfinished</button><span class="sep">,</span>
-
-      <button
-        type="button"
-        class="status-filter-link"
-        class:active={watchFilter === 'liked'}
-        on:click={() => { watchFilter = 'liked'; }}
-      >{likedCount} Liked</button><span class="sep">, and</span>
-
-      <button
-        type="button"
-        class="status-filter-link"
-        class:active={watchFilter === 'disliked'}
-        on:click={() => { watchFilter = 'disliked'; }}
-      >{hatedCount} Hated</button>
-    </h2>
-
     <div class="controls">
       <div class="filter-tabs">
-        <button type="button" class:active={typeFilter === 'all'} on:click={() => typeFilter = 'all'}>All</button>
-        <button type="button" class:active={typeFilter === 'movie'} on:click={() => typeFilter = 'movie'}>Movies</button>
-        <button type="button" class:active={typeFilter === 'tv'} on:click={() => typeFilter = 'tv'}>TV</button>
+        <button type="button" class:active={typeFilter === 'all'} on:click={() => typeFilter = 'all'}>
+          <span>All</span>
+        </button>
+        <button type="button" class:active={typeFilter === 'movie'} on:click={() => typeFilter = 'movie'}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M3 7.5h4"/><path d="M3 12h18"/><path d="M3 16.5h4"/><path d="M17 3v18"/><path d="M17 7.5h4"/><path d="M17 16.5h4"/></svg>
+          <span>Movies</span>
+        </button>
+        <button type="button" class:active={typeFilter === 'tv'} on:click={() => typeFilter = 'tv'}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="15" x="2" y="7" rx="2" ry="2"/><polyline points="17 2 12 7 7 2"/></svg>
+          <span>TV</span>
+        </button>
+      </div>
+
+      <div class="filter-tabs">
+        <button type="button" class:active={collectionFilter === 'all'} on:click={() => collectionFilter = 'all'}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+          <span>All</span>
+        </button>
+        <button type="button" class:active={collectionFilter === 'collected'} on:click={() => collectionFilter = 'collected'}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          <span>Collected</span>
+        </button>
+        <button type="button" class:active={collectionFilter === 'wanted'} on:click={() => collectionFilter = 'wanted'}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          <span>Wanted</span>
+        </button>
       </div>
 
       <div class="filter-tabs layout-tabs" title="Switch catalog layout">
@@ -159,21 +120,6 @@
         </button>
       </div>
 
-      <div class="filter-tabs">
-        <button type="button" class:active={collectionFilter === 'all'} on:click={() => collectionFilter = 'all'}>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
-          <span>All ({databaseEntries.length})</span>
-        </button>
-        <button type="button" class:active={collectionFilter === 'collected'} on:click={() => collectionFilter = 'collected'}>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-          <span>Collected ({collectedCount})</span>
-        </button>
-        <button type="button" class:active={collectionFilter === 'wanted'} on:click={() => collectionFilter = 'wanted'}>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/></svg>
-          <span>Wanted ({wantedCount})</span>
-        </button>
-      </div>
-
       <select class="sort-select" bind:value={sortBy} aria-label="Sort catalog">
         <option value="recent">Added</option>
         <option value="title">Title A–Z</option>
@@ -192,7 +138,7 @@
         layout={layoutMode}
         onDrive={diskFolders.includes(item.folder_name)}
         results={Reflect.get(searchResults, `db:${item.folder_name}`)}
-        onLookup={(t, y, d) => onLookup(`db:${item.folder_name}`, t, y, d)}
+        onLookup={(t, y, d, m) => onLookup(`db:${item.folder_name}`, t, y, d, m)}
         onWikiLookup={(t, y, d) => onWikiLookup?.(`db:${item.folder_name}`, t, y, d)}
         onSelect={(m) => onSelect(item.folder_name, m)}
         onDelete={() => onDelete(item.folder_name)}

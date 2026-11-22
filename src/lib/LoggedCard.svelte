@@ -1,6 +1,6 @@
 <script>
-  import { revealItemInDir } from '@tauri-apps/plugin-opener';
-  import { MEDIA_ROOT, TV_ROOT, fetchMovieKeywords, computeSeasonWatchStatus } from '$lib/guppyStore.js';
+  import { revealItemInDir, openPath } from '@tauri-apps/plugin-opener';
+  import { getMediaRoot, fetchMovieKeywords, computeSeasonWatchStatus, playInVlc, resolveLocalMediaPath } from '$lib/guppyStore.js';
   export let item;
   export let layout = 'cards';
   export let onDrive = true;
@@ -31,6 +31,7 @@
   let queryTitle = item.title || '';
   let queryYear = item.year || '';
   let queryDirector = item.director || '';
+  let queryMediaType = item.media_type === 'tv' ? 'tv' : 'movie';
 
   let localWatch = item.watch_status || '';
   let lastFolder = item.folder_name;
@@ -53,8 +54,6 @@
     return localWatch;
     })();
 
-
-
   function handleTrashClick() {
     if (!confirmDelete) {
       confirmDelete = true;
@@ -67,14 +66,15 @@
     onDelete?.();
   }
 
-    async function openMovieFolder() {
+  async function openMovieFolder() {
     try {
-        const baseRoot = item.media_type === 'tv' ? TV_ROOT : MEDIA_ROOT;
-        await revealItemInDir(`${baseRoot}/${item.folder_name}`);
+      const baseRoot = getMediaRoot(item);
+      const resolvedPath = await resolveLocalMediaPath(`${baseRoot}/${item.folder_name}`);
+      await openPath(resolvedPath);
     } catch (err) {
-        alert(`Could not open folder: ${err}`);
+      alert(`Could not open folder: ${err}`);
     }
-    }
+  }
 
   async function setWatch(nextStatus) {
     localWatch = nextStatus;
@@ -94,6 +94,7 @@
     queryTitle = item.title || '';
     queryYear = item.year || '';
     queryDirector = item.director || '';
+    queryMediaType = item.media_type === 'tv' ? 'tv' : 'movie';
     showLookupBox = !showLookupBox;
   }
 
@@ -177,7 +178,14 @@
 
   </button>
 {:else}
-  <article class="catalog-entry" class:flag-missing={!onDrive && item.status !== 'wanted'} class:flag-wanted={item.status === 'wanted'}>
+  <article
+    class="catalog-entry"
+    class:media-tv={item.media_type === 'tv'}
+    class:media-movie={(item.media_type || 'movie') === 'movie'}
+    class:flag-owned={onDrive && item.status !== 'wanted'}
+    class:flag-missing={!onDrive && item.status !== 'wanted'}
+    class:flag-wanted={item.status === 'wanted'}
+  >
     <div class="entry-body">
       <button type="button" class="poster-btn" on:click={() => onOpenMovie?.(item)} title="Open movie details">
         {#if item.poster_url}
@@ -194,16 +202,20 @@
 
 
       <div class="meta-col">
-     <div class="title-line">
-       <span class="title">
-         {item.title || item.folder_name}
-         {#if item.media_type === 'tv' && item.season_number}
-           <span class="season-tag">· Season {item.season_number}</span>
-         {/if}
-       </span>
-       <span class="mono">({item.year || 'n.d.'})</span>
-     </div>
-
+        <div class="title-line">
+          <button
+            type="button"
+            class="title title-link-btn"
+            on:click={() => onOpenMovie?.(item)}
+            title="Open movie details"
+          >
+            {item.title || item.folder_name}
+            {#if item.media_type === 'tv' && item.season_number}
+              <span class="season-tag">· Season {item.season_number}</span>
+            {/if}
+          </button>
+          <span class="mono">({item.year || 'n.d.'})</span>
+        </div>
 
         <div class="badge-action-row">
           {#if item.status === 'wanted'}
@@ -250,30 +262,22 @@
               <button type="button" class="icon-btn" on:click={openMovieFolder} title="Open folder in Finder" aria-label="Open folder">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
               </button>
+              <button
+                type="button"
+                class="icon-btn"
+                on:click={() => playInVlc(item.folder_name, '', item.media_type === 'tv')}
+                title="Play in VLC"
+                aria-label="Play in VLC"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+              </button>
             {/if}
 
-            {#if localWatch === ''}
-         {#if item.media_type === 'tv'}
-           <span
-             class="season-watch-dot"
-             title={effectiveWatch === 'liked' ? 'Season Seen & Liked' : effectiveWatch === 'disliked' ? 'Season Disliked' : effectiveWatch === 'unfinished' ? 'Season In Progress / Unfinished' : 'Season Unseen'}
-           >
-             {#if effectiveWatch === 'liked'}
-               <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#2b7a3d" /></svg>
-             {:else if effectiveWatch === 'disliked'}
-               <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#9e2a2b" /></svg>
-             {:else if effectiveWatch === 'unfinished'}
-               <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#8a8578" /></svg>
-             {:else}
-               <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.5" fill="#fffff8" stroke="#111" stroke-width="1.5" /></svg>
-             {/if}
-           </span>
-         {:else}
             <span class="watch-triad">
               <button
                 type="button"
                 class="icon-btn"
-                class:active-watch={localWatch === ''}
+                class:active-watch={(item.media_type === 'tv' ? effectiveWatch : localWatch) === ''}
                 on:click|stopPropagation={() => setWatch('')}
                 title="Unseen"
                 aria-label="Mark Unseen"
@@ -283,7 +287,7 @@
               <button
                 type="button"
                 class="icon-btn"
-                class:active-watch={localWatch === 'liked'}
+                class:active-watch={(item.media_type === 'tv' ? effectiveWatch : localWatch) === 'liked'}
                 on:click|stopPropagation={() => setWatch('liked')}
                 title="Seen & Liked"
                 aria-label="Mark Seen and Liked"
@@ -293,7 +297,7 @@
               <button
                 type="button"
                 class="icon-btn"
-                class:active-watch={localWatch === 'unfinished'}
+                class:active-watch={(item.media_type === 'tv' ? effectiveWatch : localWatch) === 'unfinished'}
                 on:click|stopPropagation={() => setWatch('unfinished')}
                 title="Unfinished"
                 aria-label="Mark Unfinished"
@@ -303,7 +307,7 @@
               <button
                 type="button"
                 class="icon-btn"
-                class:active-watch={localWatch === 'disliked'}
+                class:active-watch={(item.media_type === 'tv' ? effectiveWatch : localWatch) === 'disliked'}
                 on:click|stopPropagation={() => setWatch('disliked')}
                 title="Seen & Disliked"
                 aria-label="Mark Seen and Disliked"
@@ -311,27 +315,6 @@
                 <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#9e2a2b" /></svg>
               </button>
             </span>
-         {/if}
-
-            {:else}
-              <button
-                type="button"
-                class="icon-btn"
-                on:click|stopPropagation={() => setWatch('')}
-                title={localWatch === 'liked' ? 'Seen & Liked (click to clear back to Unseen)' : localWatch === 'unfinished' ? 'Unfinished (click to clear back to Unseen)' : 'Seen & Disliked (click to clear back to Unseen)'}
-                aria-label="Clear watch status"
-              >
-                {#if localWatch === 'liked'}
-                  <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#2b7a3d" /></svg>
-                {:else if localWatch === 'unfinished'}
-                  <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#8a8578" /></svg>
-                {:else}
-                  <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#9e2a2b" /></svg>
-                {/if}
-              </button>
-            {/if}
-
-
           </div>
         </div>
             {#if item.director || item.cast_list}
@@ -411,10 +394,18 @@
     </div>
 
     {#if showLookupBox}
-      <form class="relookup-bar" on:submit|preventDefault={() => onLookup?.(queryTitle, queryYear, queryDirector)}>
+      <form class="relookup-bar" on:submit|preventDefault={() => onLookup?.(queryTitle, queryYear, queryDirector, queryMediaType)}>
         <input type="text" placeholder="Title" bind:value={queryTitle} />
         <input type="number" placeholder="Year" style="width: 68px;" bind:value={queryYear} />
         <input type="text" placeholder="Director" style="width: 120px;" bind:value={queryDirector} />
+        <button
+          type="button"
+          class="btn-secondary"
+          on:click={() => queryMediaType = queryMediaType === 'tv' ? 'movie' : 'tv'}
+          title="Toggle Movie vs. TV lookup"
+        >
+          {queryMediaType === 'tv' ? 'TV' : 'Movie'}
+        </button>
         <button type="submit" class="btn-save">TMDb</button>
         {#if onWikiLookup}
           <button type="button" class="btn-secondary" on:click={() => onWikiLookup?.(queryTitle, queryYear, queryDirector)}>Wiki</button>

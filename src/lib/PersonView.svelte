@@ -1,6 +1,14 @@
 <script>
+  import LoggedCard from '$lib/LoggedCard.svelte';
   import { enrichFilmBatch, computeSeasonWatchStatus } from '$lib/guppyStore.js';
 
+  export let searchResults = {};
+  export let onPersonClick;
+  export let onLookup;
+  export let onWikiLookup;
+  export let onSelect;
+  export let onDelete;
+  export let onSaveTags;
   export let personData;
   export let loading = false;
   export let databaseEntries = [];
@@ -169,258 +177,138 @@
 
     {#if filteredDirected.length > 0}
       <h3>{filteredDirected.length} Directed by {personData.name}</h3>
-      <div class="film-grid">
+      <div class="grid-3">
         {#each filteredDirected as film (film.id)}
-          {@const status = getCatalogStatus(film, databaseEntries, justAddedIds, justRemovedIds)}
-          {@const dbMatch = getCatalogMatch(film, databaseEntries).at(0)}
-          {@const curWatch = dbMatch ? (dbMatch.watch_status || '') : (justAddedIds.has(film.id) ? (addedWatchById[film.id] || '') : '')}
-          <article class="film-card">
-            <button
-              type="button"
-              class="poster-btn"
-              style="padding: 0; border: none; background: none; cursor: pointer;"
-              on:click={() => onOpenMovie?.(film)}
-              title="Open details"
-            >
-              {#if film.poster_url}
-                <img src={film.poster_url} alt={film.title} />
-              {:else}
-                <div class="no-poster">No Poster</div>
-              {/if}
-            </button>
-            <div class="film-meta">
-              <div class="film-title-row">
-                <div class="title-left">
-                  <button
-                    type="button"
-                    class="person-link"
-                    style="font-weight: bold; text-align: left;"
-                    on:click={() => onOpenMovie?.(film)}
-                  >{film.title}</button> <span class="mono">({film.year || 'n.d.'})</span>
-                </div>
-
-                <div class="title-right">
-                  {#if status === 'Wanted'}
-                    <button type="button" class="icon-btn icon-danger" on:click={() => handleRemoveClick(film)} title="Remove from Wanted" aria-label="Remove from Wanted">
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/></svg>
-                    </button>
-                  {/if}
-                </div>
-              </div>
-
-              <div class="badge-row" style="display: flex; align-items: center; justify-content: space-between; width: 100%;">
-                <div>
-                  {#if status}
-                    <span class="tag" class:tag-wanted={status === 'Wanted'} class:tag-missing={status === 'Missing'}>{status}</span>
-                  {/if}
-                </div>
-
-                <div class="icon-actions" style="margin-left: auto;">
-                  {#if curWatch === ''}
-                    <span class="watch-triad">
-                      <button
-                        type="button"
-                        class="icon-btn"
-                        class:active-watch={Boolean(dbMatch || justAddedIds.has(film.id))}
-                        on:click|stopPropagation={() => handleDotAction(film, '', personData.name)}
-                        title={dbMatch || justAddedIds.has(film.id) ? 'Unseen' : 'Add to Wanted as Unseen'}
-                        aria-label="Unseen"
-                      >
-                        <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.5" fill="#fffff8" stroke="#111" stroke-width="1.5" /></svg>
-                      </button>
-                      <button
-                        type="button"
-                        class="icon-btn"
-                        on:click|stopPropagation={() => handleDotAction(film, 'liked', personData.name)}
-                        title={dbMatch || justAddedIds.has(film.id) ? 'Seen & Liked' : 'Add to Wanted as Seen & Liked'}
-                        aria-label="Seen and Liked"
-                      >
-                        <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#2b7a3d" /></svg>
-                      </button>
-                      <button
-                        type="button"
-                        class="icon-btn"
-                        on:click|stopPropagation={() => handleDotAction(film, 'unfinished', personData.name)}
-                        title={dbMatch || justAddedIds.has(film.id) ? 'Unfinished' : 'Add to Wanted as Unfinished'}
-                        aria-label="Unfinished"
-                      >
-                        <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#8a8578" /></svg>
-                      </button>
-                      <button
-                        type="button"
-                        class="icon-btn"
-                        on:click|stopPropagation={() => handleDotAction(film, 'disliked', personData.name)}
-                        title={dbMatch || justAddedIds.has(film.id) ? 'Seen & Disliked' : 'Add to Wanted as Seen & Disliked'}
-                        aria-label="Seen and Disliked"
-                      >
-                        <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#9e2a2b" /></svg>
-                      </button>
-                      <button
-                        type="button"
-                        class="icon-btn"
-                        on:click|stopPropagation={() => handleDotAction(film, 'disliked', personData.name)}
-                        title={dbMatch || justAddedIds.has(film.id) ? 'Seen & Disliked' : 'Add to Wanted as Seen & Disliked'}
-                        aria-label="Seen and Disliked"
-                      >
-                        <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#9e2a2b" /></svg>
-                      </button>
-                    </span>
+          {@const dbMatch = justRemovedIds.has(film.id) ? null : getCatalogMatch(film, databaseEntries).at(0)}
+          {#if dbMatch}
+            <LoggedCard
+              item={dbMatch}
+              onDrive={dbMatch.status !== 'wanted' && diskFolders.includes(dbMatch.folder_name)}
+              results={searchResults[dbMatch.folder_name]}
+              onLookup={(t, y, d, m) => onLookup?.(dbMatch.folder_name, t || dbMatch.title, y || dbMatch.year, d, m)}
+              onWikiLookup={() => onWikiLookup?.(dbMatch.folder_name, dbMatch.title, dbMatch.year)}
+              onSelect={(m) => onSelect?.(dbMatch.folder_name, m)}
+              onDelete={async () => {
+                await onDelete?.(dbMatch.folder_name);
+              }}
+              onPersonClick={onPersonClick || ((n) => onSelectPerson?.(n, null))}
+              onSaveTags={(t, c) => onSaveTags?.(dbMatch.folder_name, t, c)}
+              onWatchStatus={(st) => onWatchStatus?.(dbMatch.folder_name, st)}
+              {onOpenMovie}
+            />
+          {:else}
+            {@const isPendingWanted = justAddedIds.has(film.id)}
+            {@const curWatch = isPendingWanted ? (addedWatchById[film.id] || '') : ''}
+            <article class="catalog-entry">
+              <div class="entry-body">
+                <button type="button" class="poster-btn" on:click={() => onOpenMovie?.(film)} title="Open details">
+                  {#if film.poster_url}
+                    <img src={film.poster_url} alt={film.title} class="poster" />
                   {:else}
-                    <button
-                      type="button"
-                      class="icon-btn"
-                      on:click|stopPropagation={() => handleDotAction(film, '', personData.name)}
-                      title={curWatch === 'liked' ? 'Seen & Liked (click to reset to Unseen)' : curWatch === 'unfinished' ? 'Unfinished (click to reset to Unseen)' : 'Seen & Disliked (click to reset to Unseen)'}
-                      aria-label="Clear watch status"
-                    >
-                      {#if curWatch === 'liked'}
-                        <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#2b7a3d" /></svg>
-                      {:else if curWatch === 'unfinished'}
-                        <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#8a8578" /></svg>
-                      {:else}
-                        <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#9e2a2b" /></svg>
-                      {/if}
-                    </button>
+                    <div class="poster-blank">No Poster</div>
                   {/if}
+                </button>
+                <div class="meta-col">
+                  <div class="title-line">
+                    <button type="button" class="person-link title" style="text-align: left;" on:click={() => onOpenMovie?.(film)}>{film.title}</button>
+                    <span class="mono">({film.year || 'n.d.'})</span>
+                  </div>
+                  <div class="badge-action-row" style="margin-top: 4px; display: flex; align-items: center; justify-content: space-between; width: 100%;">
+                    <div>
+                      {#if isPendingWanted}<span class="tag tag-wanted">Wanted</span>{/if}
+                    </div>
+                    <div class="icon-actions" style="margin-left: auto;">
+                      <span class="watch-triad">
+                        <button type="button" class="icon-btn" class:active-watch={isPendingWanted && curWatch === ''} on:click|stopPropagation={() => handleDotAction(film, '', personData.name)} title="Add to Wanted as Unseen" aria-label="Unseen">
+                          <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.5" fill="#fffff8" stroke="#111" stroke-width="1.5" /></svg>
+                        </button>
+                        <button type="button" class="icon-btn" on:click|stopPropagation={() => handleDotAction(film, 'liked', personData.name)} title="Add to Wanted as Seen & Liked" aria-label="Seen and Liked">
+                          <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#2b7a3d" /></svg>
+                        </button>
+                        <button type="button" class="icon-btn" on:click|stopPropagation={() => handleDotAction(film, 'unfinished', personData.name)} title="Add to Wanted as Unfinished" aria-label="Unfinished">
+                          <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#8a8578" /></svg>
+                        </button>
+                        <button type="button" class="icon-btn" on:click|stopPropagation={() => handleDotAction(film, 'disliked', personData.name)} title="Add to Wanted as Seen & Disliked" aria-label="Seen and Disliked">
+                          <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#9e2a2b" /></svg>
+                        </button>
+                      </span>
+                    </div>
+                  </div>
+                  {#if film.overview}<p class="synopsis">{film.overview}</p>{/if}
                 </div>
               </div>
-
-              {#if film.overview}
-                <p class="synopsis">{film.overview}</p>
-              {/if}
-            </div>
-          </article>
+            </article>
+          {/if}
         {/each}
       </div>
     {/if}
 
     {#if filteredActed.length > 0}
       <h3>{filteredActed.length} Film Credits</h3>
-      <div class="film-grid">
+      <div class="grid-3">
         {#each filteredActed.slice(0, visibleActed) as film (film.id)}
-          {@const status = getCatalogStatus(film, databaseEntries, justAddedIds, justRemovedIds)}
-          {@const dbMatch = getCatalogMatch(film, databaseEntries).at(0)}
-          {@const curWatch = dbMatch ? (dbMatch.watch_status || '') : (justAddedIds.has(film.id) ? (addedWatchById[film.id] || '') : '')}
-          <article class="film-card">
-            <button
-              type="button"
-              class="poster-btn"
-              style="padding: 0; border: none; background: none; cursor: pointer;"
-              on:click={() => onOpenMovie?.(film)}
-              title="Open details"
-            >
-              {#if film.poster_url}
-                <img src={film.poster_url} alt={film.title} />
-              {:else}
-                <div class="no-poster">No Poster</div>
-              {/if}
-            </button>
-            <div class="film-meta">
-              <div class="film-title-row">
-                <div class="title-left">
-                  <button
-                    type="button"
-                    class="person-link"
-                    style="font-weight: bold; text-align: left;"
-                    on:click={() => onOpenMovie?.(film)}
-                  >{film.title}</button> <span class="mono">({film.year || 'n.d.'})</span>
-                </div>
-                <div class="title-right">
-                  {#if status === 'Wanted'}
-                    <button type="button" class="icon-btn icon-danger" on:click={() => handleRemoveClick(film)} title="Remove from Wanted" aria-label="Remove from Wanted">
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/></svg>
-                    </button>
-                  {/if}
-                </div>
-              </div>
-
-              <div class="badge-row" style="display: flex; align-items: center; justify-content: space-between; width: 100%;">
-                <div>
-                  {#if status}
-                    <span class="tag" class:tag-wanted={status === 'Wanted'} class:tag-missing={status === 'Missing'}>{status}</span>
-                  {/if}
-                </div>
-
-                <div class="icon-actions" style="margin-left: auto;">
-                  {#if curWatch === ''}
-                    <span class="watch-triad">
-                      <button
-                        type="button"
-                        class="icon-btn"
-                        class:active-watch={Boolean(dbMatch || justAddedIds.has(film.id))}
-                        on:click|stopPropagation={() => handleDotAction(film, '', '')}
-                        title={dbMatch || justAddedIds.has(film.id) ? 'Unseen' : 'Add to Wanted as Unseen'}
-                        aria-label="Unseen"
-                      >
-                        <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.5" fill="#fffff8" stroke="#111" stroke-width="1.5" /></svg>
-                      </button>
-                      <button
-                        type="button"
-                        class="icon-btn"
-                        on:click|stopPropagation={() => handleDotAction(film, 'liked', '')}
-                        title={dbMatch || justAddedIds.has(film.id) ? 'Seen & Liked' : 'Add to Wanted as Seen & Liked'}
-                        aria-label="Seen and Liked"
-                      >
-                        <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#2b7a3d" /></svg>
-                      </button>
-                      <button
-                        type="button"
-                        class="icon-btn"
-                        on:click|stopPropagation={() => handleDotAction(film, 'unfinished', '')}
-                        title={dbMatch || justAddedIds.has(film.id) ? 'Unfinished' : 'Add to Wanted as Unfinished'}
-                        aria-label="Unfinished"
-                      >
-                        <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#8a8578" /></svg>
-                      </button>
-                      <button
-                        type="button"
-                        class="icon-btn"
-                        on:click|stopPropagation={() => handleDotAction(film, 'disliked', '')}
-                        title={dbMatch || justAddedIds.has(film.id) ? 'Seen & Disliked' : 'Add to Wanted as Seen & Disliked'}
-                        aria-label="Seen and Disliked"
-                      >
-                        <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#9e2a2b" /></svg>
-                      </button>
-                    </span>
+          {@const dbMatch = justRemovedIds.has(film.id) ? null : getCatalogMatch(film, databaseEntries).at(0)}
+          {#if dbMatch}
+            <LoggedCard
+              item={dbMatch}
+              onDrive={dbMatch.status !== 'wanted' && diskFolders.includes(dbMatch.folder_name)}
+              results={searchResults[dbMatch.folder_name]}
+              onLookup={(t, y, d, m) => onLookup?.(dbMatch.folder_name, t || dbMatch.title, y || dbMatch.year, d, m)}
+              onWikiLookup={() => onWikiLookup?.(dbMatch.folder_name, dbMatch.title, dbMatch.year)}
+              onSelect={(m) => onSelect?.(dbMatch.folder_name, m)}
+              onDelete={async () => {
+                await onDelete?.(dbMatch.folder_name);
+              }}
+              onPersonClick={onPersonClick || ((n) => onSelectPerson?.(n, null))}
+              onSaveTags={(t, c) => onSaveTags?.(dbMatch.folder_name, t, c)}
+              onWatchStatus={(st) => onWatchStatus?.(dbMatch.folder_name, st)}
+              {onOpenMovie}
+            />
+          {:else}
+            {@const isPendingWanted = justAddedIds.has(film.id)}
+            {@const curWatch = isPendingWanted ? (addedWatchById[film.id] || '') : ''}
+            <article class="catalog-entry">
+              <div class="entry-body">
+                <button type="button" class="poster-btn" on:click={() => onOpenMovie?.(film)} title="Open details">
+                  {#if film.poster_url}
+                    <img src={film.poster_url} alt={film.title} class="poster" />
                   {:else}
-                    <button
-                      type="button"
-                      class="icon-btn"
-                      on:click|stopPropagation={() => handleDotAction(film, '', '')}
-                      title={curWatch === 'liked' ? 'Seen & Liked (click to reset to Unseen)' : curWatch === 'unfinished' ? 'Unfinished (click to reset to Unseen)' : 'Seen & Disliked (click to reset to Unseen)'}
-                      aria-label="Clear watch status"
-                    >
-                      {#if curWatch === 'liked'}
-                        <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#2b7a3d" /></svg>
-                      {:else if curWatch === 'unfinished'}
-                        <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#8a8578" /></svg>
-                      {:else}
-                        <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#9e2a2b" /></svg>
-                      {/if}
-                    </button>
+                    <div class="poster-blank">No Poster</div>
                   {/if}
+                </button>
+                <div class="meta-col">
+                  <div class="title-line">
+                    <button type="button" class="person-link title" style="text-align: left;" on:click={() => onOpenMovie?.(film)}>{film.title}</button>
+                    <span class="mono">({film.year || 'n.d.'})</span>
+                  </div>
+                  <div class="badge-action-row" style="margin-top: 4px; display: flex; align-items: center; justify-content: space-between; width: 100%;">
+                    <div>
+                      {#if isPendingWanted}<span class="tag tag-wanted">Wanted</span>{/if}
+                    </div>
+                    <div class="icon-actions" style="margin-left: auto;">
+                      <span class="watch-triad">
+                        <button type="button" class="icon-btn" class:active-watch={isPendingWanted && curWatch === ''} on:click|stopPropagation={() => handleDotAction(film, '', '')} title="Add to Wanted as Unseen" aria-label="Unseen">
+                          <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.5" fill="#fffff8" stroke="#111" stroke-width="1.5" /></svg>
+                        </button>
+                        <button type="button" class="icon-btn" on:click|stopPropagation={() => handleDotAction(film, 'liked', '')} title="Add to Wanted as Seen & Liked" aria-label="Seen and Liked">
+                          <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#2b7a3d" /></svg>
+                        </button>
+                        <button type="button" class="icon-btn" on:click|stopPropagation={() => handleDotAction(film, 'unfinished', '')} title="Add to Wanted as Unfinished" aria-label="Unfinished">
+                          <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#8a8578" /></svg>
+                        </button>
+                        <button type="button" class="icon-btn" on:click|stopPropagation={() => handleDotAction(film, 'disliked', '')} title="Add to Wanted as Seen & Disliked" aria-label="Seen and Disliked">
+                          <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#9e2a2b" /></svg>
+                        </button>
+                      </span>
+                    </div>
+                  </div>
+                  {#if film.overview}<p class="synopsis">{film.overview}</p>{/if}
                 </div>
               </div>
-
-              {#if film.role}
-                <div class="credits">as {film.role}</div>
-              {/if}
-
-              {#if film.overview}
-                <p class="synopsis">{film.overview}</p>
-              {/if}
-            </div>
-          </article>
+            </article>
+          {/if}
         {/each}
       </div>
-
-      {#if visibleActed < filteredActed.length}
-        <div class="show-more-row">
-          <button type="button" class="btn-secondary" disabled={loadingMore} on:click={showMoreActed}>
-            {loadingMore ? 'Loading…' : `Show More (${filteredActed.length - visibleActed} remaining)`}
-          </button>
-        </div>
-      {/if}
     {/if}
 
   {/if}

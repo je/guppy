@@ -9,8 +9,12 @@ node_modules
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 
+src/lib/guppyConfig.js
+
 # Tauri / Rust build output
 src-tauri/target/
+*.bak
+*.dmg
 
 # Local SQLite databases
 *.db
@@ -18,3 +22,7 @@ src-tauri/target/
 *.db-wal
 *.sqlite
 *.sqlite3
+build/
+app-icon.png
+app-icon.svg
+src-tauri/icons/

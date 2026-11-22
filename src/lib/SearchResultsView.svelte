@@ -1,4 +1,13 @@
 <script>
+  import LoggedCard from '$lib/LoggedCard.svelte';
+  import { computeSeasonWatchStatus } from '$lib/guppyStore.js';
+
+  export let searchResults = {};
+  export let onLookup;
+  export let onWikiLookup;
+  export let onSelect;
+  export let onDelete;
+  export let onSaveTags;
   export let results = null;
   export let loading = false;
   export let databaseEntries = [];
@@ -9,8 +18,6 @@
   export let onWatchStatus;
   export let onAddWanted;
   export let onRemoveWanted;
-
-  import { computeSeasonWatchStatus } from '$lib/guppyStore.js';
 
   function getSeasonStatus(sMatch) {
     if (!sMatch) return '';
@@ -179,75 +186,74 @@
       <div class="grid-3">
         {#each results.movies as film (film.id)}
           {@const existing = justRemovedMovies.has(film.id) ? null : findMovieMatch(film)}
-          {@const isPendingWanted = !existing && justAddedMovies.has(film.id)}
-          {@const onDrive = existing && existing.status !== 'wanted' && diskFolders.includes(existing.folder_name)}
-          {@const curWatch = existing ? (existing.watch_status || '') : (isPendingWanted ? (addedWatchById[film.id] || '') : '')}
-          {@const poster = getPoster(film)}
-          <article class="catalog-entry">
-            <div class="entry-body">
-              <button
-                type="button"
-                class="poster-btn"
-                on:click={() => onOpenMovie?.(film)}
-                title="Open movie details"
-              >
-                {#if poster}
-                  <img
-                    src={poster}
-                    alt={film.title}
-                    class="poster"
-                    on:error={(e) => { e.currentTarget.style.display = 'none'; }}
-                  />
-                {:else}
-                  <div class="poster-blank">No Poster</div>
-                {/if}
-              </button>
+          {#if existing}
+            <LoggedCard
+              item={existing}
+              onDrive={existing.status !== 'wanted' && diskFolders.includes(existing.folder_name)}
+              results={searchResults[existing.folder_name]}
+              onLookup={(t, y, d, m) => onLookup?.(existing.folder_name, t || existing.title, y || existing.year, d, m)}
+              onWikiLookup={() => onWikiLookup?.(existing.folder_name, existing.title, existing.year)}
+              onSelect={(m) => onSelect?.(existing.folder_name, m)}
+              onDelete={async () => {
+                await onDelete?.(existing.folder_name);
+              }}
+              {onPersonClick}
+              onSaveTags={(t, c) => onSaveTags?.(existing.folder_name, t, c)}
+              onWatchStatus={(st) => onWatchStatus?.(existing.folder_name, st)}
+              {onOpenMovie}
+            />
+          {:else}
+            {@const isPendingWanted = justAddedMovies.has(film.id)}
+            {@const curWatch = isPendingWanted ? (addedWatchById[film.id] || '') : ''}
+            {@const poster = getPoster(film)}
+            <article class="catalog-entry">
+              <div class="entry-body">
+                <button
+                  type="button"
+                  class="poster-btn"
+                  on:click={() => onOpenMovie?.(film)}
+                  title="Open movie details"
+                >
+                  {#if poster}
+                    <img
+                      src={poster}
+                      alt={film.title}
+                      class="poster"
+                      on:error={(e) => { e.currentTarget.style.display = 'none'; }}
+                    />
+                  {:else}
+                    <div class="poster-blank">No Poster</div>
+                  {/if}
+                </button>
 
-              <div class="meta-col">
-                <div class="title-line">
-                  <button
-                    type="button"
-                    class="person-link title"
-                    style="text-align: left;"
-                    on:click={() => onOpenMovie?.(film)}
-                  >
-                    {film.title}
-                  </button>
-                  <span class="mono">({film.year || 'n.d.'})</span>
-                </div>
-
-                <div class="badge-action-row" style="margin-top: 4px; display: flex; align-items: center; justify-content: space-between; width: 100%;">
-                  <div>
-                    {#if onDrive}
-                      <span class="tag">{existing.quality || 'On Drive'}</span>
-                    {:else if existing?.status === 'wanted' || isPendingWanted}
-                      <span class="tag tag-wanted">Wanted</span>
-                    {:else if existing}
-                      <span class="tag tag-missing">Missing</span>
-                    {/if}
+                <div class="meta-col">
+                  <div class="title-line">
+                    <button
+                      type="button"
+                      class="person-link title"
+                      style="text-align: left;"
+                      on:click={() => onOpenMovie?.(film)}
+                    >
+                      {film.title}
+                    </button>
+                    <span class="mono">({film.year || 'n.d.'})</span>
                   </div>
 
-                  <div class="icon-actions" style="margin-left: auto;">
-                    {#if existing?.status === 'wanted' || isPendingWanted}
-                      <button
-                        type="button"
-                        class="icon-btn icon-danger"
-                        on:click={() => handleRemoveMovie(film)}
-                        title="Remove from Wanted"
-                        aria-label="Remove from Wanted"
-                      >
-                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/></svg>
-                      </button>
-                    {/if}
+                  <div class="badge-action-row" style="margin-top: 4px; display: flex; align-items: center; justify-content: space-between; width: 100%;">
+                    <div>
+                      {#if isPendingWanted}
+                        <span class="tag tag-wanted">Wanted</span>
+                      {/if}
+                    </div>
 
-                    {#if curWatch === ''}
+                    <div class="icon-actions" style="margin-left: auto;">
                       <span class="watch-triad">
                         <button
                           type="button"
                           class="icon-btn"
-                          class:active-watch={Boolean(existing || isPendingWanted)}
+                          class:active-watch={isPendingWanted && curWatch === ''}
                           on:click|stopPropagation={() => handleDotAction(film, '')}
-                          title={existing || isPendingWanted ? 'Unseen' : 'Add to Wanted as Unseen'}
+                          title="Add to Wanted as Unseen"
                           aria-label="Unseen"
                         >
                           <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.5" fill="#fffff8" stroke="#111" stroke-width="1.5" /></svg>
@@ -255,8 +261,9 @@
                         <button
                           type="button"
                           class="icon-btn"
+                          class:active-watch={isPendingWanted && curWatch === 'liked'}
                           on:click|stopPropagation={() => handleDotAction(film, 'liked')}
-                          title={existing || isPendingWanted ? 'Seen & Liked' : 'Add to Wanted as Seen & Liked'}
+                          title="Add to Wanted as Seen & Liked"
                           aria-label="Seen and Liked"
                         >
                           <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#2b7a3d" /></svg>
@@ -264,8 +271,9 @@
                         <button
                           type="button"
                           class="icon-btn"
+                          class:active-watch={isPendingWanted && curWatch === 'unfinished'}
                           on:click|stopPropagation={() => handleDotAction(film, 'unfinished')}
-                          title={existing || isPendingWanted ? 'Unfinished' : 'Add to Wanted as Unfinished'}
+                          title="Add to Wanted as Unfinished"
                           aria-label="Unfinished"
                         >
                           <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#8a8578" /></svg>
@@ -273,58 +281,24 @@
                         <button
                           type="button"
                           class="icon-btn"
+                          class:active-watch={isPendingWanted && curWatch === 'disliked'}
                           on:click|stopPropagation={() => handleDotAction(film, 'disliked')}
-                          title={existing || isPendingWanted ? 'Seen & Disliked' : 'Add to Wanted as Seen & Disliked'}
+                          title="Add to Wanted as Seen & Disliked"
                           aria-label="Seen and Disliked"
                         >
                           <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#9e2a2b" /></svg>
                         </button>
                       </span>
-                    {:else}
-                      <button
-                        type="button"
-                        class="icon-btn"
-                        on:click|stopPropagation={() => handleDotAction(film, '')}
-                        title={curWatch === 'liked' ? 'Seen & Liked (click to reset to Unseen)' : curWatch === 'unfinished' ? 'Unfinished (click to reset to Unseen)' : 'Seen & Disliked (click to reset to Unseen)'}
-                        aria-label="Clear watch status"
-                      >
-                        {#if curWatch === 'liked'}
-                          <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#2b7a3d" /></svg>
-                        {:else if curWatch === 'unfinished'}
-                          <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#8a8578" /></svg>
-                        {:else}
-                          <svg width="10" height="10" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="#9e2a2b" /></svg>
-                        {/if}
-                      </button>
-                    {/if}
+                    </div>
                   </div>
+
+                  {#if film.overview}
+                    <p class="synopsis">{film.overview}</p>
+                  {/if}
                 </div>
-
-                {#if film.director || film.cast_list}
-                  <div class="credits">
-                    {#if film.director}
-                      Dir.
-                      {#each film.director.split(',').map(s => s.trim()).filter(Boolean) as dir, idx}
-                        {#if idx > 0}, {/if}
-                        <button type="button" class="person-link" on:click={() => onPersonClick?.(dir)}>{dir}</button>
-                      {/each}
-                    {/if}
-                    {#if film.director && film.cast_list} · {/if}
-                    {#if film.cast_list}
-                      {#each film.cast_list.split(',').map(s => s.trim()).filter(Boolean) as actor, idx}
-                        {#if idx > 0}, {/if}
-                        <button type="button" class="person-link" on:click={() => onPersonClick?.(actor)}>{actor}</button>
-                      {/each}
-                    {/if}
-                  </div>
-                {/if}
-
-                {#if film.overview}
-                  <p class="synopsis">{film.overview}</p>
-                {/if}
               </div>
-            </div>
-          </article>
+            </article>
+          {/if}
         {/each}
       </div>
     {/if}

@@ -10,19 +10,59 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-header {
+header.app-header {
   position: sticky;
   top: 0;
-  z-index: 50;
+  z-index: 60;
   background: #fffff8;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 16px;
-  padding: 14px 0;
-  height: 60px;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 12px 0;
+  min-height: 52px;
   box-sizing: border-box;
   border-bottom: 2px solid #111;
+}
+
+header.app-header .header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  max-width: 100%;
+}
+
+header.app-header .header-mid {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+}
+
+header.app-header .watch-status-bar {
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  margin: 0;
+}
+
+header.app-header .header-right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+@media (max-width: 640px) {
+  header.app-header .watch-status-bar {
+    flex-wrap: wrap;
+    white-space: normal;
+  }
 }
 
 .brand-toggle {
@@ -272,28 +312,30 @@ header {
 .sep { color: #999588; font-size: 0.85rem; }
 
 /* Collection View & Grids */
-.collection-section { margin-top: 0; }
-.collection-section .section-bar {
-  position: sticky;
-  top: 60px;
-  z-index: 40;
-  background: #fffff8;
-  padding: 14px 0 12px 0;
-  margin-bottom: 12px;
+.collection-section {
+  margin-top: 0;
+  padding-top: 0 !important;
 }
 
-.catalog-status-btn {
-  background: none;
-  border: none;
-  padding: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  cursor: pointer;
-  font-family: inherit;
-  color: #111;
+.collection-section .section-bar {
+  position: sticky;
+  top: 56px;
+  z-index: 45;
+  background: #fffff8;
+  padding: 10px 0 10px 0;
+  margin-bottom: 12px;
+  width: 100%;
+  border-bottom: 1px solid #d8d3c8;
 }
-.catalog-status-btn:hover { opacity: 0.78; }
+
+.collection-section .section-bar .controls {
+  width: 100%;
+}
+
+.collection-section .section-bar .search-input {
+  margin-left: auto;
+}
+
 .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .search-input {
   background: #fff;
@@ -644,3 +686,145 @@ header {
 }
 
 .episode-row.ep-missing { opacity: 0.72; }
+
+/* Quality pill (owned on drive): crisp blue outline & text */
+.tag {
+  color: #1a5a96 !important;
+  border-color: #1a5a96 !important;
+  background-color: transparent !important;
+}
+
+/* Wanted pill: crisp solid black outline & text */
+.tag.tag-wanted {
+  color: #111111 !important;
+  border-color: #111111 !important;
+  background-color: transparent !important;
+}
+
+/* Keep Missing pill distinct in warm crimson/amber */
+.tag.tag-missing {
+  color: #9e2a2b !important;
+  border-color: #9e2a2b !important;
+  background-color: transparent !important;
+}
+
+.catalog-entry.flag-wanted,
+.flag-wanted {
+  border-left: none !important;
+  padding-left: 0 !important;
+}
+
+main.container {
+  padding-top: 0 !important;
+}
+
+/* Clickable title next to poster */
+.title-link-btn {
+  background: none !important;
+  border: none !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  font: inherit !important;
+  color: inherit !important;
+  text-align: left !important;
+  cursor: pointer !important;
+  text-decoration: none !important;
+}
+
+.title-link-btn:hover {
+  opacity: 0.72;
+}
+
+/* Remove all underlines from links and link-style buttons across the app */
+a,
+a:hover,
+a:focus,
+a:visited,
+.person-link,
+.person-link:hover,
+.btn-text,
+.btn-text:hover,
+.status-filter-link,
+.status-filter-link:hover {
+  text-decoration: none !important;
+}
+
+.watch-triad .icon-btn {
+  opacity: 0.35;
+  transition: opacity 0.12s ease;
+}
+
+.watch-triad .icon-btn:hover {
+  opacity: 0.85;
+}
+
+.watch-triad .icon-btn.active-watch {
+  opacity: 1 !important;
+}
+
+/* Audit Catalog Health & Recent Activity Log */
+.audit-health-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 0 12px 0;
+  margin-bottom: 14px;
+  border-bottom: 1px solid #d8d3c8;
+}
+
+.audit-health-label {
+  font-size: 0.85rem;
+  color: #555;
+  margin-right: 2px;
+}
+
+.audit-health-pill {
+  background: #f4f2ea;
+  border: 1px solid #b8b4a6;
+  color: #111;
+  font-family: inherit;
+  font-size: 0.8rem;
+  height: 26px;
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.audit-health-pill:hover {
+  border-color: #111;
+}
+
+.audit-health-pill.active {
+  background: #111;
+  color: #fffff8;
+  border-color: #111;
+}
+
+.activity-log-section {
+  margin-top: 28px;
+}
+
+.activity-log-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.activity-log-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid #ece8dc;
+  font-size: 0.86rem;
+}
+
+.activity-time {
+  color: #666;
+  font-size: 0.78rem;
+  min-width: 138px;
+}
+
+.activity-title {
+  color: #111;
+}

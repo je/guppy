@@ -13,6 +13,7 @@
   let running = false;
   let saving = false;
   let defaultWatch = '';
+  let defaultMediaType = 'auto';
 
   $: matchedCount = rows.filter(r => r.selected).length;
 
@@ -43,10 +44,16 @@
       const moviePart = pipeIdx >= 0 ? rawLine.slice(0, pipeIdx).trim() : rawLine;
       const tagsPart = pipeIdx >= 0 ? rawLine.slice(pipeIdx + 1).trim() : '';
 
-      const seasonMatch = moviePart.match(/(?:^|\s|[-–:])(?:season|s)\s*0*(\d{1,2})\b/i);
-      const seasonNumber = seasonMatch ? Number(seasonMatch[1]) : null;
-      const cleanedForMovie = seasonNumber
-        ? moviePart.replace(/(?:^|\s|[-–:])(?:season|s)\s*0*\d{1,2}\b/gi, ' ').replace(/\s+/g, ' ').trim()
+      const seasonMatch = moviePart.match(/(?:^|\s|[-–:])(?:season|s)\s*0*(\d{1,2})\b/i)
+        || moviePart.match(/(?:^|\s|[-–:])season\s*$/i);
+      const hasSeasonKeyword = Boolean(seasonMatch);
+      const seasonNumber = seasonMatch?.[1] ? Number(seasonMatch[1]) : (hasSeasonKeyword ? 1 : null);
+      const cleanedForMovie = hasSeasonKeyword
+        ? moviePart
+            .replace(/(?:^|\s|[-–:])(?:season|s)\s*0*\d{1,2}\b/gi, ' ')
+            .replace(/(?:^|\s|[-–:])season\s*$/gi, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
         : moviePart;
 
       const quotedMatch = cleanedForMovie.match(/^"([^"]+)"(.*)$/);
@@ -73,8 +80,8 @@
         draftDirector: base.director || '',
         key: `${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
         raw: rawLine,
-        isTv: Boolean(seasonNumber),
-        seasonNumber,
+        isTv: defaultMediaType === 'tv' ? true : (defaultMediaType === 'movie' ? false : hasSeasonKeyword),
+        seasonNumber: seasonNumber || (defaultMediaType === 'tv' ? 1 : null),
         tags: tagsPart,
         watch_status: defaultWatch,
         refining: false,
@@ -89,10 +96,34 @@
 
   function isTitleMismatch(row, sel) {
     if (!sel) return false;
-    const norm = (s) => (s || '').toLowerCase().replace(/^the\s+|^a\s+|^an\s+/i, '').replace(/[^a-z0-9]+/g, ' ').trim();
+    const norm = (s) => (s || '')
+      .toLowerCase()
+      .replace(/\b(the|a|an)\b/g, ' ')
+      .replace(/[^a-z0-9]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
     const inTitle = norm(row.title);
     const outTitle = norm(sel.title);
     return Boolean(inTitle && outTitle && inTitle !== outTitle);
+  }
+
+  function normTitle(s) {
+    return (s || '')
+      .toLowerCase()
+      .replace(/\b(the|a|an)\b/g, ' ')
+      .replace(/[^a-z0-9]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function rankMatches(queryTitle, list) {
+    const target = normTitle(queryTitle);
+    if (!target || !Array.isArray(list)) return list || [];
+    return [...list].sort((a, b) => {
+      const aExact = normTitle(a.title) === target ? 0 : 1;
+      const bExact = normTitle(b.title) === target ? 0 : 1;
+      return aExact - bExact;
+    });
   }
 
   async function lookupSingleRow(row) {
@@ -110,20 +141,20 @@
     }
     if (row.isTv) {
       const tvRes = await searchTmdbTv(qTitle, qYear);
-      return tvRes.map(s => ({ ...s, season_number: row.seasonNumber || 1 }));
+      return rankMatches(qTitle, tvRes.map(s => ({ ...s, season_number: row.seasonNumber || 1 })));
     }
 
     const movieRes = await searchTmdb(qTitle, qYear, qDir);
-    const topMovie = movieRes.at(0);
+    const rankedMovies = rankMatches(qTitle, movieRes);
+    const topMovie = rankedMovies.at(0);
     if (!topMovie || isTitleMismatch(row, topMovie)) {
       const tvRes = await searchTmdbTv(qTitle, qYear);
-      const topTv = tvRes.at(0);
-      if (topTv && !isTitleMismatch(row, topTv)) {
-        const taggedTv = tvRes.map(s => ({ ...s, season_number: row.seasonNumber || 1 }));
-        return [...taggedTv, ...movieRes];
+      if (tvRes.length > 0) {
+        const taggedTv = rankMatches(qTitle, tvRes.map(s => ({ ...s, season_number: row.seasonNumber || 1 })));
+        return !isTitleMismatch(row, taggedTv.at(0)) ? [...taggedTv, ...rankedMovies] : [...rankedMovies, ...taggedTv];
       }
     }
-    return movieRes;
+    return rankedMovies;
   }
 
   async function runBulkLookup() {
@@ -278,6 +309,20 @@ Better Call Saul Season 6 | drama"
   ></textarea>
 
   <div class="toolbar" style="justify-content: space-between;">
+      <div class="filter-tabs" title="Default media type for lines without a season number">
+        <button type="button" class:active={defaultMediaType === 'auto'} on:click={() => defaultMediaType = 'auto'}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+          <span>Auto</span>
+        </button>
+        <button type="button" class:active={defaultMediaType === 'movie'} on:click={() => defaultMediaType = 'movie'}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M3 7.5h4"/><path d="M3 12h18"/><path d="M3 16.5h4"/><path d="M17 3v18"/><path d="M17 7.5h4"/><path d="M17 16.5h4"/></svg>
+          <span>Movie</span>
+        </button>
+        <button type="button" class:active={defaultMediaType === 'tv'} on:click={() => defaultMediaType = 'tv'}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="15" x="2" y="7" rx="2" ry="2"/><polyline points="17 2 12 7 7 2"/></svg>
+          <span>TV</span>
+        </button>
+      </div>
     <button class="btn-primary" disabled={running || !rawText.trim()} on:click={runBulkLookup}>
       {running ? 'Looking up…' : 'Lookup All'}
     </button>
@@ -334,7 +379,6 @@ Better Call Saul Season 6 | drama"
       >
         {saving ? 'Saving…' : `Add ${matchedCount} Matched to Wanted`}
       </button>
-
     </div>
   </div>
 
@@ -394,6 +438,20 @@ Better Call Saul Season 6 | drama"
 
             {#if row.refining}
               <form class="refine-bar" on:submit|preventDefault={() => refineRow(i)}>
+                <button
+                  type="button"
+                  class="btn-secondary"
+                  on:click={() => {
+                    rows[i] = {
+                      ...row,
+                      isTv: !row.isTv,
+                      seasonNumber: !row.isTv ? (row.seasonNumber || 1) : null
+                    };
+                  }}
+                  title="Toggle Movie vs. TV Show"
+                >
+                  {row.isTv ? 'TV' : 'Movie'}
+                </button>
                 <input
                   type="text"
                   placeholder="Title or tt1234567"
