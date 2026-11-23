@@ -1,5 +1,6 @@
 <script>
   import { readDir } from '@tauri-apps/plugin-fs';
+  import { revealItemInDir } from '@tauri-apps/plugin-opener';
   import { computeSeasonWatchStatus } from '$lib/guppyStore.js';
 
   export let item;
@@ -9,6 +10,8 @@
   export let error = '';
   export let results = null;
   export let onLookup;
+  export let onLookupMore = null;
+  export let onRemove = null;
   export let onSelect;
   export let onSave;
   export let onPersonClick;
@@ -133,7 +136,6 @@
     : (data?.watch_status || '');
 
   let seasonPickerOpen = false;
-  let showImportTags = false;
 
   function handleTopWatchClick(status) {
     if (!isTv) {
@@ -184,15 +186,28 @@
         </div>
 
         <div class="icon-actions">
-          <button
-            type="button"
-            class="icon-btn"
-            on:click={() => showImportTags = !showImportTags}
-            title="Set Tags & Clips before importing"
-            aria-label="Set Tags & Clips"
-          >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2H2v10l9.29 9.29c.94.94 2.48.94 3.42 0l6.58-6.58c.94-.94.94-2.48 0-3.42L12 2Z"/><path d="M7 7h.01"/></svg>
-          </button>
+          {#if item?.sourcePath}
+            <button
+              type="button"
+              class="icon-btn"
+              on:click={() => revealItemInDir(item.sourcePath).catch(() => {})}
+              title="Reveal file/folder in Finder"
+              aria-label="Reveal in Finder"
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+            </button>
+          {/if}
+          {#if onRemove}
+            <button
+              type="button"
+              class="icon-btn"
+              on:click={onRemove}
+              title="Remove from staged import"
+              aria-label="Remove from staged import"
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            </button>
+          {/if}
           {#if isTv && !seasonPickerOpen}
             <button
               type="button"
@@ -271,7 +286,7 @@
 
       </div>
 
-      {#if showImportTags || data?.tags || data?.clips}
+      {#if data}
         <div class="tag-editor" style="margin: 6px 0;">
           <div class="tag-row">
             <input type="text" placeholder="Tags before import (e.g. adult, noir, 4k)…" bind:value={data.tags} />
@@ -507,6 +522,18 @@
           </div>
         </div>
       {/each}
+      {#if results?.hasMoreMatches && onLookupMore}
+        <div style="margin-top: 8px;">
+          <button
+            type="button"
+            class="btn btn-sm"
+            disabled={loading}
+            on:click={() => onLookupMore((results?.length || 8) + 8)}
+          >
+            {loading ? 'Loading more…' : `Show more matches (${results.length} of ${results.totalRankedCount})`}
+          </button>
+        </div>
+      {/if}
     </div>
   {/if}
 </article>

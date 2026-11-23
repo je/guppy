@@ -1,4 +1,5 @@
 <script>
+  import Icon from '$lib/Icon.svelte';
   import { onMount } from 'svelte';
   import MovieCard from '$lib/MovieCard.svelte';
   import LoggedCard from '$lib/LoggedCard.svelte';
@@ -22,6 +23,7 @@
   export let onAudit;
   export let onClearImport;
   export let onLookup;
+  export let onLookupMore = null;
   export let onWikiLookup;
   export let onSelect;
   export let onSave;
@@ -36,8 +38,37 @@
 
   let activeHealthFilter = '';
   let activityEntries = [];
+  let activityLimit = 40;
   let missingSidecars = [];
   let scanningSidecars = false;
+
+  function isAdultEntry(entry) {
+    return String(entry?.tags || '')
+      .toLowerCase()
+      .split(',')
+      .map(s => s.trim())
+      .includes('adult');
+  }
+
+  function getAuditWatchColor(entry) {
+    const st = entry?.watch_status || '';
+    if (st === 'liked') return '#2b7a3d';
+    if (st === 'unfinished') return '#8a8578';
+    if (st === 'disliked') return '#9e2a2b';
+    return '#111111';
+  }
+
+  function getAuditDetailTooltip(entry) {
+    const kind = entry?.media_type === 'tv' ? 'TV' : (isAdultEntry(entry) ? 'Adult Movie' : 'Movie');
+    const st = entry?.watch_status === 'liked'
+      ? 'Seen & Liked'
+      : entry?.watch_status === 'unfinished'
+        ? 'Unfinished'
+        : entry?.watch_status === 'disliked'
+          ? 'Seen & Disliked'
+          : 'Unseen';
+    return `Open ${kind} details (${st})`;
+  }
 
   function normalizeTitleKey(str) {
     return String(str || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
@@ -80,20 +111,12 @@
       if (exactYearHit) return exactYearHit;
     }
 
-    const exactKey = databaseEntries.find(e => normalizeTitleKey(e.title) === targetKey);
-    if (exactKey) return exactKey;
-    if (targetKey.length >= 5) {
-      return databaseEntries.find(e => {
-        const k = normalizeTitleKey(e.title);
-        return k && (k.includes(targetKey) || targetKey.includes(k));
-      }) || null;
-    }
-    return null;
+    return databaseEntries.find(e => normalizeTitleKey(e.title) === targetKey) || null;
   }
   let writingMissingSidecars = '';
 
   async function refreshAuditExtras() {
-    activityEntries = await loadActivityLog(40).catch(() => []);
+    activityEntries = await loadActivityLog(activityLimit).catch(() => []);
     if (databaseEntries.length > 0 && diskFolders.length > 0) {
       scanningSidecars = true;
       missingSidecars = await scanMissingSidecarsOnDisk(databaseEntries, diskFolders).catch(() => []);
@@ -238,6 +261,7 @@
         {#each activeHealthList as item (item.folder_name)}
           <LoggedCard
             {item}
+            auditIconTitle={true}
             onDrive={diskFolders.includes(item.folder_name)}
             results={Reflect.get(searchResults, `db:${item.folder_name}`)}
             onLookup={(t, y, d, m) => onLookup(`db:${item.folder_name}`, t, y, d, m)}
@@ -284,6 +308,8 @@
         loading={Reflect.get(loadingLookup, item.key)}
         results={Reflect.get(searchResults, item.key)}
         onLookup={() => onLookup(item.key)}
+        onLookupMore={(nextLimit) => onLookupMore?.(item.key, nextLimit)}
+        onRemove={() => { importQueue = importQueue.filter(q => q.key !== item.key); }}
         onWikiLookup={() => onWikiLookup(item.key)}
         onSelect={(m) => onSelect(item.key, m)}
         onSave={() => onSave(item)}
@@ -305,6 +331,7 @@
         loading={Reflect.get(loadingLookup, `root:${folder}`)}
         results={Reflect.get(searchResults, `root:${folder}`)}
         onLookup={() => onLookup(`root:${folder}`)}
+        onLookupMore={(nextLimit) => onLookupMore?.(`root:${folder}`, nextLimit)}
         onWikiLookup={() => onWikiLookup(`root:${folder}`)}
         onSelect={(m) => onSelect(`root:${folder}`, m)}
         onSave={() => onSave({ key: `root:${folder}`, name: folder, isDirectory: true, sourcePath: `${MEDIA_ROOT}/${folder}` })}
@@ -321,6 +348,7 @@
     {#each missingEntries as item (item.folder_name)}
       <LoggedCard
         {item}
+        auditIconTitle={true}
         onDrive={false}
         results={Reflect.get(searchResults, `db:${item.folder_name}`)}
         onLookup={(t, y, d, m) => onLookup(`db:${item.folder_name}`, t, y, d, m)}
@@ -353,15 +381,35 @@
           <span class="mono activity-time">{log.created_at}</span>
           <span class="tag" class:tag-wanted={log.action.startsWith('Added')} class:tag-missing={log.action === 'Removed'}>{log.action}</span>
           {#if matchedEntry && onOpenMovie}
-            <button type="button" class="activity-title-link" on:click={() => onOpenMovie(matchedEntry)}>{log.title}</button>
+            {@const iconColor = getAuditWatchColor(matchedEntry)}
+            <button
+              type="button"
+              class="icon-btn"
+              style="color: {iconColor}; border-color: {iconColor}; flex-shrink: 0;"
+              title={getAuditDetailTooltip(matchedEntry)}
+              aria-label={getAuditDetailTooltip(matchedEntry)}
+              on:click={() => onOpenMovie(matchedEntry)}
+            >
+              <Icon name={matchedEntry.media_type === 'tv' ? 'tv' : (isAdultEntry(matchedEntry) ? 'adult' : 'movie')} size={13} />
+            </button>
           {:else}
-            <span class="activity-title">{log.title}</span>
+            <span style="display: inline-block; width: 24px; flex-shrink: 0;"></span>
           {/if}
+          <span class="activity-title">{log.title}</span>
           {#if log.detail}
             <span class="muted">({log.detail})</span>
           {/if}
         </div>
       {/each}
+    </div>
+    <div style="margin-top: 10px; display: flex; align-items: center; gap: 10px;">
+      {#if activityEntries.length >= activityLimit}
+        <button type="button" class="btn btn-sm" on:click={() => { activityLimit += 60; refreshAuditExtras(); }}>
+          Show older entries
+        </button>
+      {:else}
+        <span class="muted">Showing all {activityEntries.length} entries</span>
+      {/if}
     </div>
   {:else}
     <p class="empty-note">No recent library changes recorded yet.</p>

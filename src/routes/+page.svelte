@@ -11,6 +11,16 @@
   import { GUPPY_CONFIG, MEDIA_ROOT, TV_ROOT, THE_MOVIES_ROOT, VIDEO_EXTS, readDir, writeTextFile, initDb, inferMetadata, inferFolder, searchTmdb, searchWikipediaMovie, fetchPersonFilmography, saveToLibrary, saveWantedMovie, updateExistingMovie, updateMovieTagsAndClips, syncAllJellyfinSidecars, removeMovieFromLibrary, updateMovieWatchStatus, searchUniversal, searchTmdbTv, fetchTvSeasonDetails, saveTvSeasonToLibrary, saveWantedTvSeason, updateSeasonEpisodes, computeSeasonWatchStatus, parseLooseTvFilename, exportCatalogToJson, reconcileTvEpisodesOnDisk, backfillMissingTvMetadata, backfillMissingMovieMetadata, fetchEnrichedTvShow, logActivity, writeJellyfinTvSidecars, isRemoteClient, getConnectionStatus, mountSharedDrive,migrateNonAdultMovies  } from '$lib/guppyStore.js';
 
   let viewMode = 'collection';
+  let prevViewMode = 'collection';
+  $: if (viewMode !== prevViewMode) {
+    if (prevViewMode === 'split' && viewMode !== 'split') {
+      importQueue = [];
+      showAddForm = false;
+      showBulkForm = false;
+      inputs = { ...inputs, wishlist: { title: '', year: '', director: '', quality: '', poster_url: '', imdb_id: '', cast_list: '', overview: '' } };
+    }
+    prevViewMode = viewMode;
+  }
   let previousView = 'split';
   let showAddForm = false;
   let diskFolders = [];
@@ -147,7 +157,8 @@
         if (!entry.isDirectory && !isVideo) continue;
 
         if (!entry.isDirectory) {
-          const parsedTv = parseLooseTvFilename(entry.name, selectedFolderName);
+          const isGenericDropFolder = /^(to[-_\s]?import|import|incoming|downloads?|staging|temp|new|movies?|films?|desktop)$/i.test(String(selectedFolderName || '').trim());
+          const parsedTv = parseLooseTvFilename(entry.name, isGenericDropFolder ? '' : selectedFolderName);
           if (parsedTv) {
             if (!looseTvGroups.has(parsedTv.normKey)) {
               looseTvGroups.set(parsedTv.normKey, {
@@ -163,13 +174,32 @@
           }
         }
 
+        let subTvFiles = [];
+        let subParsedTv = null;
+        if (entry.isDirectory) {
+          const subEntries = await readDir(`${selected}/${entry.name}`).catch(() => []);
+          const subVideos = subEntries.filter(se => !se.isDirectory && !se.name.startsWith('.') && VIDEO_EXTS.some(ext => se.name.toLowerCase().endsWith(ext)));
+          const parsedSubs = subVideos.map(sv => ({ file: sv, tv: parseLooseTvFilename(sv.name, entry.name) })).filter(x => x.tv);
+          if (parsedSubs.length > 0 && parsedSubs.length === subVideos.length) {
+            subTvFiles = subVideos.map(sv => ({ name: sv.name, sourcePath: `${selected}/${entry.name}/${sv.name}` }));
+            subParsedTv = parsedSubs.at(0).tv;
+          }
+        }
         const key = `import:${entry.name}`;
-        items.push({ key, name: entry.name, isDirectory: entry.isDirectory, sourcePath: `${selected}/${entry.name}` });
+        items.push({
+          key,
+          name: entry.name,
+          isDirectory: entry.isDirectory,
+          sourcePath: `${selected}/${entry.name}`,
+          ...(subTvFiles.length > 0 ? { files: subTvFiles } : {})
+        });
         if (!Reflect.get(nextInputs, key)) {
           Reflect.set(
             nextInputs,
             key,
-            entry.isDirectory ? await inferFolder(`${selected}/${entry.name}`, entry.name) : inferMetadata(entry.name)
+            subParsedTv
+              ? { title: subParsedTv.title, year: subParsedTv.year, director: '', quality: '', media_type: 'tv', season_number: subParsedTv.season_number, watch_status: '' }
+              : (entry.isDirectory ? await inferFolder(`${selected}/${entry.name}`, entry.name) : inferMetadata(entry.name))
           );
         }
       }
@@ -210,7 +240,7 @@
     } catch (err) { statusMsg = `Import error: ${err}`; }
   }
 
-  async function handleLookup(key, t = '', y = '', d = '', mediaOverride = '') {
+  async function handleLookup(key, t = '', y = '', d = '', mediaOverride = '', limit = 8) {
     const cur = Reflect.get(inputs, key);
     const dbItem = key.startsWith('db:')
       ? databaseEntries.find(item => `db:${item.folder_name}` === key)
@@ -228,7 +258,7 @@
     try {
       const res = isTv
         ? await searchTmdbTv(title, year)
-        : await searchTmdb(title, year, director);
+        : await searchTmdb(title, year, director, limit);
       searchResults = { ...searchResults, [key]: res };
     } catch (err) { statusMsg = `Lookup failed: ${err}`; }
     finally { loadingLookup = { ...loadingLookup, [key]: false }; }
@@ -1056,8 +1086,9 @@
     />
   {:else}
     <AuditorView
+      onLookupMore={(key, nextLimit) => handleLookup(key, '', '', '', '', nextLimit)}
       {orphans}
-      databaseEntries={visibleEntries}
+      {databaseEntries}
       {diskFolders}
       {importQueue}
       bind:inputs

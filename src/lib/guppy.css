@@ -812,7 +812,7 @@ a:visited,
 .activity-log-row {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
+  align-items: center;
   gap: 8px 10px;
   padding: 6px 0;
   border-bottom: 1px solid #ece8dc;
@@ -871,3 +871,5 @@ a:visited,
 .g-st-d0e0dd { margin-left: auto; font-size: 0.74rem; }
 .g-st-1c244e { margin: 0; }
 .g-st-678404 { display: inline-flex; align-items: center; gap: 6px; }
+
+.activity-log-row .tag { width: 152px; text-align: center; flex-shrink: 0; }

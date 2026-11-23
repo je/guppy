@@ -1,4 +1,5 @@
 <script>
+  import Icon from '$lib/Icon.svelte';
   import { getPrimaryVideoExt, THE_MOVIES_ROOT, MEDIA_ROOT, TV_ROOT } from '$lib/guppyStore.js';
   import { exists } from '@tauri-apps/plugin-fs';
   import { revealItemInDir, openPath } from '@tauri-apps/plugin-opener';
@@ -16,6 +17,16 @@
   export let onSaveTags;
   export let onWatchStatus;
   export let onOpenMovie;
+  export let auditIconTitle = false;
+
+  $: isAdultCard = String(item?.tags || '').toLowerCase().split(',').map(s => s.trim()).includes('adult');
+  $: auditIconColor = item?.watch_status === 'liked'
+    ? '#2b7a3d'
+    : item?.watch_status === 'unfinished'
+      ? '#8a8578'
+      : item?.watch_status === 'disliked'
+        ? '#9e2a2b'
+        : '#111111';
 
   const posterSmall = ["https:/", "image.tmdb.org", "t", "p", "w154"].join("/");
   const imdbBase = ["https:/", "www.imdb.com", "title", ""].join("/");
@@ -250,18 +261,44 @@
 
       <div class="meta-col">
         <div class="title-line">
-          <button
-            type="button"
-            class="title title-link-btn"
-            on:click={() => onOpenMovie?.(item)}
-            title="Open movie details"
-          >
-            {item.title || item.folder_name}
-            {#if item.media_type === 'tv' && item.season_number}
-              <span class="season-tag">· Season {item.season_number}</span>
-            {/if}
-          </button>
-          <span class="mono">({item.year || 'n.d.'})</span>
+          {#if auditIconTitle}
+            <span class="title">
+              {item.title || item.folder_name}
+              {#if item.media_type === 'tv' && item.season_number}
+                <span class="season-tag">· Season {item.season_number}</span>
+              {/if}
+            </span>
+            <span class="mono">({item.year || 'n.d.'})</span>
+            <button
+              type="button"
+              class="icon-btn"
+              style="color: {auditIconColor}; border-color: {auditIconColor};"
+              title="Open details"
+              aria-label="Open details"
+              on:click={() => onOpenMovie?.(item)}
+            >
+              {#if item.media_type === 'tv'}
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="15" x="2" y="7" rx="2" ry="2"/><polyline points="17 2 12 7 7 2"/></svg>
+              {:else if isAdultCard}
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+              {:else}
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M17 3v18"/><path d="M3 12h18"/></svg>
+              {/if}
+            </button>
+          {:else}
+            <button
+              type="button"
+              class="title title-link-btn"
+              on:click={() => onOpenMovie?.(item)}
+              title="Open movie details"
+            >
+              {item.title || item.folder_name}
+              {#if item.media_type === 'tv' && item.season_number}
+                <span class="season-tag">· Season {item.season_number}</span>
+              {/if}
+            </button>
+            <span class="mono">({item.year || 'n.d.'})</span>
+          {/if}
         </div>
 
         <div class="badge-action-row">
@@ -368,6 +405,7 @@
             </span>
           </div>
         </div>
+            {#if item.runtime || item.countries || item.genres}<div class="spec-strip" style="margin: 2px 0 4px;">{#if item.runtime}<span>{item.runtime} min</span>{/if}{#if item.countries}<span class="spec-item">{item.countries}</span>{/if}{#if item.genres}<span class="spec-item">{item.genres}</span>{/if}</div>{/if}
             {#if item.director || item.cast_list}
             <div class="credits">
                 {#if item.director}

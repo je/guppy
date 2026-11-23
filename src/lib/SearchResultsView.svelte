@@ -399,6 +399,7 @@
                     </div>
                   </div>
 
+                  {#if film.runtime || film.countries || film.genres}<div class="spec-strip" style="margin: 2px 0 4px;">{#if film.runtime}<span>{film.runtime} min</span>{/if}{#if film.countries}<span class="spec-item">{film.countries}</span>{/if}{#if film.genres}<span class="spec-item">{film.genres}</span>{/if}</div>{/if}
                   {#if film.director || film.cast_list}
                     {@const topActors = (film.cast_list || '').split(',').map(s => s.trim()).filter(Boolean).slice(0, 4)}
                     <div class="credits">

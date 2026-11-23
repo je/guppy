@@ -1,6 +1,7 @@
 <script>
   import { onDestroy } from 'svelte';
   import LoggedCard from '$lib/LoggedCard.svelte';
+  import Icon from '$lib/Icon.svelte';
 
   export let databaseEntries = [];
   export let diskFolders = [];
@@ -54,8 +55,49 @@
     if (tFilter === 'tv' && item.media_type !== 'tv') return false;
     if (cFilter === 'collected' && item.status === 'wanted') return false;
     if (cFilter === 'wanted' && item.status !== 'wanted') return false;
-    const q = qText.toLowerCase().trim();
-    if (!q) return true;
+
+    let remaining = String(qText || '').toLowerCase().trim();
+    if (!remaining) return true;
+
+    // 1. Extract bracketed tag sets: [tag1, tag2, ...] (requires ALL listed tags)
+    const requiredTags = [];
+    remaining = remaining.replace(/\[([^\]]+)\]/g, (_, inner) => {
+      for (const rawTag of inner.split(',')) {
+        const t = rawTag.trim();
+        if (t) requiredTags.push(t);
+      }
+      return ' ';
+    });
+
+    if (requiredTags.length > 0) {
+      const itemTags = String(item.tags || '')
+        .toLowerCase()
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean);
+      if (!requiredTags.every(req => itemTags.includes(req))) return false;
+    }
+
+    // 2. Extract year range: (1970-1980) or 1972-1973 (also supports en-dash)
+    let yearMin = null;
+    let yearMax = null;
+    remaining = remaining.replace(/\(?\b((?:19|20)\d{2})\s*[-–]\s*((?:19|20)\d{2})\b\)?/g, (_, y1, y2) => {
+      const a = Number(y1);
+      const b = Number(y2);
+      yearMin = Math.min(a, b);
+      yearMax = Math.max(a, b);
+      return ' ';
+    });
+
+    if (yearMin !== null && yearMax !== null) {
+      const y = Number(item.year) || 0;
+      if (!y || y < yearMin || y > yearMax) return false;
+    }
+
+    // 3. Match any remaining text query across standard fields
+    const textQuery = remaining.replace(/\s+/g, ' ').trim();
+    if (!textQuery) return true;
+
     return [
       item.title,
       item.director,
@@ -64,7 +106,7 @@
       item.clips,
       item.episodes_json,
       String(item.year)
-    ].some(v => v?.toLowerCase().includes(q));
+    ].some(v => fuzzyTextIncludes(v, textQuery));
   }
 
   $: filtered = databaseEntries.filter(item =>
@@ -93,11 +135,11 @@
           <span>All</span>
         </button>
         <button type="button" class:active={typeFilter === 'movie'} on:click={() => typeFilter = 'movie'}>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M3 7.5h4"/><path d="M3 12h18"/><path d="M3 16.5h4"/><path d="M17 3v18"/><path d="M17 7.5h4"/><path d="M17 16.5h4"/></svg>
+          <Icon name="movie" size={12} />
           <span>Movies</span>
         </button>
         <button type="button" class:active={typeFilter === 'tv'} on:click={() => typeFilter = 'tv'}>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="15" x="2" y="7" rx="2" ry="2"/><polyline points="17 2 12 7 7 2"/></svg>
+          <Icon name="tv" size={12} />
           <span>TV</span>
         </button>
       </div>

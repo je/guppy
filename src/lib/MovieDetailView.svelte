@@ -1,5 +1,6 @@
 <script>
   import { onMount } from 'svelte';
+  import Icon from '$lib/Icon.svelte';
   import { revealItemInDir, openPath } from '@tauri-apps/plugin-opener';
   import { getMediaRoot, fetchMovieDetails, getMovieFolderFiles, fetchMovieKeywords, computeSeasonWatchStatus, fetchTvSeasonDetails, playInVlc, resolveLocalMediaPath } from '$lib/guppyStore.js';
 
@@ -447,7 +448,10 @@
 
     <div class="info-col">
       <div class="title-block">
-        <h2>
+        <h2 style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+          <span style="display: inline-flex; align-items: center; color: #555;" title={movie.media_type === 'tv' ? 'TV Series' : (activeTagSet.has('adult') ? 'Adult Movie' : 'Movie')}>
+            <Icon name={movie.media_type === 'tv' ? 'tv' : (activeTagSet.has('adult') ? 'adult' : 'movie')} size={18} />
+          </span>
           {movie.title}
           {#if movie.media_type === 'tv' && movie.season_number}· Season {movie.season_number}{/if}
           <span class="year">({movie.year || 'n.d.'})</span>

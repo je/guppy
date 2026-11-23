@@ -219,9 +219,13 @@ function extractQuality(text) {
   }
 
   // 2. Detect resolution + source anywhere in the folder/file name (including inside parentheses)
-  const resMatch = s.match(/\b(2160p|4K|1080p|720p|480p|360p)\b/i);
+  const resMatch = s.match(/(?:^|[^0-9a-z])(2160p?|4k|1080p?|720p?|576p?|480p?|360p?)(?:$|[^0-9a-z])/i);
   const res = resMatch
-    ? (resMatch.at(1).toLowerCase() === '4k' ? '2160p' : resMatch.at(1).toLowerCase())
+    ? (() => {
+        const rawR = resMatch.at(1).toLowerCase();
+        if (rawR === '4k' || rawR === '2160' || rawR === '2160p') return '2160p';
+        return rawR.endsWith('p') ? rawR : `${rawR}p`;
+      })()
     : '';
 
   let src = '';
@@ -239,13 +243,50 @@ function extractQuality(text) {
   return '';
 }
 
+
+export function editDistance(a, b) {
+  const s = String(a || '');
+  const t = String(b || '');
+  if (s === t) return 0;
+  if (!s.length) return t.length;
+  if (!t.length) return s.length;
+  const dp = Array.from({ length: t.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= s.length; i++) {
+    let prev = i - 1;
+    dp[0] = i;
+    for (let j = 1; j <= t.length; j++) {
+      const tmp = dp[j];
+      dp[j] = s.charCodeAt(i - 1) === t.charCodeAt(j - 1)
+        ? prev
+        : 1 + Math.min(prev, dp[j], dp[j - 1]);
+      prev = tmp;
+    }
+  }
+  return dp[t.length];
+}
+
+export function fuzzyTextIncludes(haystack, query) {
+  const h = String(haystack || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+  const q = String(query || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+  if (!q) return true;
+  if (!h) return false;
+  if (h.includes(q)) return true;
+  const qTokens = q.split(/[^a-z0-9]+/).filter(w => w.length >= 4);
+  if (qTokens.length === 0) return false;
+  const hTokens = h.split(/[^a-z0-9]+/).filter(w => w.length >= 3);
+  return qTokens.every(qt => {
+    const maxEdits = qt.length >= 7 ? 2 : 1;
+    return hTokens.some(ht => ht.includes(qt) || (Math.abs(ht.length - qt.length) <= maxEdits && editDistance(ht, qt) <= maxEdits));
+  });
+}
+
 export function inferMetadata(rawName) {
   let cleaned = rawName.replace(/\.[^/.]+$/, '');
   const imdbMatch = cleaned.match(/\[imdbid-(tt\d+)\]/i);
   const imdb_id = imdbMatch ? imdbMatch.at(1) : '';
   const quality = extractQuality(cleaned);
 
-  cleaned = cleaned.replace(/\[[^\]]*\]/g, '').trim();
+  cleaned = cleaned.replace(/\[[^\]]*\]/g, '').replace(/^(?:\d{1,2}[._-]\d{1,2}[._-](?:19|20)\d{2}|(?:19|20)\d{2}[._-]\d{1,2}[._-]\d{1,2})[\s._-]+/, '').trim();
 
   const yearMatch = cleaned.match(/[\(\.\s_-]?(19\d{2}|20\d{2})[\)\.\s_-]?/);
   let year = yearMatch ? String(yearMatch.at(1)) : '';
@@ -259,7 +300,8 @@ export function inferMetadata(rawName) {
     else { rawTitle = year; year = ''; }
   }
 
-  rawTitle = rawTitle.replace(/\b(2160p|4K|1080p|720p|480p|360p|BluRay|BDRip|BRRip|WEB-DL|WEBRip|DVDRip|DVD|HDTV|VHS|x264|x265|HEVC|AAC|AC3)\b.*$/i, '');
+  rawTitle = rawTitle
+    .replace(/(?:^|[\s._-])(?:RET_[A-Z0-9_]+|2160p?|4K|1080p?|720p?|576p?|480p?|360p?|BluRay|BDRip|BRRip|WEB-?DL|WEBRip|DVDRip|DVD|HDTV|VHS|x264|x265|HEVC|AAC|AC3)(?:$|[\s._-]).*$/i, '');
   const title = rawTitle.replace(/^[-\s._]+/, '').replace(/[-\s._]+$/, '').replace(/[._]/g, ' ').replace(/\s+/g, ' ').trim();
 
   return { title, year, quality, poster_url: '', imdb_id, director: '', cast_list: '', overview: '' };
@@ -312,7 +354,10 @@ export async function initDb() {
     "media_type TEXT DEFAULT 'movie'",
     'season_number INTEGER DEFAULT 0',
     "episodes_json TEXT DEFAULT ''",
-    'tmdb_id INTEGER DEFAULT 0'
+    'tmdb_id INTEGER DEFAULT 0',
+    "runtime TEXT DEFAULT ''",
+    "countries TEXT DEFAULT ''",
+    "genres TEXT DEFAULT ''"
   ]) {
     try { await db.execute(`ALTER TABLE wishlist_videos ADD COLUMN ${col}`); } catch (_) {}
   }
@@ -367,7 +412,7 @@ export async function logActivity(action, title, detail = '') {
         'X-Guppy-Client': isRemote ? 'remote' : 'host'
       },
       body: JSON.stringify({
-        sql: `DELETE FROM activity_log WHERE id NOT IN (SELECT id FROM activity_log ORDER BY id DESC LIMIT 200)`,
+        sql: `DELETE FROM activity_log WHERE id NOT IN (SELECT id FROM activity_log ORDER BY id DESC LIMIT 500)`,
         params: []
       })
     });
@@ -400,9 +445,12 @@ export async function fetchEnrichedMovie(movie) {
   const details = await res.json();
   const directorObj = details.credits?.crew?.find(c => c.job === 'Director');
   const topCast = (details.credits?.cast || []).slice(0, 5).map(c => c.name).join(', ');
+  const runtime = details.runtime ? String(details.runtime) : '';
+  const countries = (details.production_countries || []).map(c => c.name).filter(Boolean).join(', ');
+  const genres = (details.genres || []).map(g => g.name).filter(Boolean).join(', ');
   const posterBase = ["https:/", "image.tmdb.org", "t", "p", "w300"].join("/");
 
-  return {
+  const enrichedObj = {
     ...movie,
     title: movie.title,
     year: movie.release_date ? movie.release_date.slice(0, 4) : '',
@@ -410,13 +458,20 @@ export async function fetchEnrichedMovie(movie) {
     imdb_id: details.imdb_id || '',
     director: directorObj ? directorObj.name : '',
     cast_list: topCast,
-    overview: details.overview || ''
+    overview: details.overview || '',
+    runtime,
+    countries,
+    genres
   };
+  if (movie?.id) enrichedMovieCache.set(movie.id, enrichedObj);
+  return enrichedObj;
 }
 
-export async function searchTmdb(title, year = '', director = '') {
-  const qTitle = (title || '').trim();
-  const qYear = String(year || '').trim();
+export async function searchTmdb(title, year = '', director = '', limit = 8) {
+  const rawTitle = (title || '').trim();
+  const inlineYearMatch = rawTitle.match(/\s*[\(\[]\s*((?:19|20)\d{2})\s*[\)\]]\s*$/);
+  const qTitle = inlineYearMatch ? rawTitle.replace(inlineYearMatch.at(0), '').trim() : rawTitle;
+  const qYear = String(year || (inlineYearMatch ? inlineYearMatch.at(1) : '') || '').trim();
   const qDir = (director || '').trim().toLowerCase();
   if (!qTitle && !qYear && !qDir) return [];
 
@@ -442,8 +497,20 @@ export async function searchTmdb(title, year = '', director = '') {
     qYear ? fetchCandidates(true) : Promise.resolve([])
   ]);
 
+  let rawCombined = [...exactYearResults, ...broadResults];
+  if (rawCombined.length === 0 && qTitle.length >= 5) {
+    const trimmedTitle = qTitle.slice(0, -1);
+    const retryUrl = new URL(`https://${host}/3/search/movie`);
+    retryUrl.searchParams.set("api_key", TMDB_API_KEY);
+    retryUrl.searchParams.set("query", trimmedTitle);
+    retryUrl.searchParams.set("include_adult", "true");
+    if (qYear) retryUrl.searchParams.set("primary_release_year", qYear);
+    const retryRes = await tauriFetch(retryUrl.toString(), { method: 'GET', headers: { 'Accept': 'application/json' } });
+    const retryData = await retryRes.json();
+    rawCombined = retryData.results || [];
+  }
   const seenIds = new Set();
-  const combined = [...exactYearResults, ...broadResults].filter(m => {
+  const combined = rawCombined.filter(m => {
     if (!m.id || seenIds.has(m.id)) return false;
     seenIds.add(m.id);
     return true;
@@ -454,41 +521,63 @@ export async function searchTmdb(title, year = '', director = '') {
   const targetExact = qTitle.toLowerCase();
   const targetYearNum = Number(qYear) || 0;
 
+  const targetWords = targetNorm ? targetNorm.split(' ').filter(Boolean) : [];
+
   const scoreCandidate = (m) => {
     const mExact = (m.title || '').toLowerCase();
+    const mOrigExact = (m.original_title || '').toLowerCase();
     const mNorm = norm(m.title);
     const mOrigNorm = norm(m.original_title);
     const mYear = m.release_date ? Number(m.release_date.slice(0, 4)) : 0;
     const yearDiff = (targetYearNum && mYear) ? Math.abs(mYear - targetYearNum) : 99;
 
-    let titleScore = 3;
-    if (targetExact && (mExact === targetExact || (m.original_title || '').toLowerCase() === targetExact)) {
-      titleScore = 0; // Exact title match
-    } else if (targetNorm && (mNorm === targetNorm || mOrigNorm === targetNorm)) {
-      titleScore = 1; // Exact normalized title match
-    } else if (targetNorm && (mNorm.startsWith(targetNorm) || mNorm.includes(targetNorm))) {
-      titleScore = 2; // Partial title match
+    const isExactTitle = Boolean(
+      (targetExact && (mExact === targetExact || mOrigExact === targetExact)) ||
+      (targetNorm && (mNorm === targetNorm || mOrigNorm === targetNorm))
+    );
+
+    const hasAllWords = targetWords.length > 0 && targetWords.every(w =>
+      mNorm.includes(w) || mOrigNorm.includes(w)
+    );
+    const isCloseTitle = !isExactTitle && Boolean(
+      targetNorm && (
+        mNorm.startsWith(targetNorm) ||
+        mNorm.includes(targetNorm) ||
+        mOrigNorm.includes(targetNorm) ||
+        hasAllWords ||
+        fuzzyTextIncludes(mNorm, targetNorm) ||
+        fuzzyTextIncludes(mOrigNorm, targetNorm)
+      )
+    );
+
+    let tier = 5;
+    if (!targetYearNum) {
+      tier = isExactTitle ? 1 : (isCloseTitle ? 2 : 5);
+    } else if (yearDiff === 0 && isExactTitle) {
+      tier = 1;
+    } else if (yearDiff === 0 && isCloseTitle) {
+      tier = 2;
+    } else if (yearDiff > 0 && isExactTitle) {
+      tier = 3;
+    } else if (yearDiff <= 5 && isCloseTitle) {
+      tier = 4;
+    } else if (yearDiff === 0) {
+      tier = 5;
     }
 
-    let yearScore = 3;
-    if (!targetYearNum) yearScore = 0;
-    else if (yearDiff === 0) yearScore = 0;      // Exact year
-    else if (yearDiff === 1) yearScore = 1;      // ±1 year (festival vs theatrical release)
-    else if (yearDiff <= 3) yearScore = 2;       // Within 3 years
-
-    return { titleScore, yearScore, yearDiff, pop: m.popularity || 0 };
+    return { tier, yearDiff, pop: m.popularity || 0 };
   };
 
   const ranked = combined.sort((a, b) => {
     const sa = scoreCandidate(a);
     const sb = scoreCandidate(b);
-    if (sa.titleScore !== sb.titleScore) return sa.titleScore - sb.titleScore;
-    if (sa.yearScore !== sb.yearScore) return sa.yearScore - sb.yearScore;
+    if (sa.tier !== sb.tier) return sa.tier - sb.tier;
     if (sa.yearDiff !== sb.yearDiff) return sa.yearDiff - sb.yearDiff;
     return sb.pop - sa.pop;
   });
 
-  const rawTop = ranked.slice(0, 8).map(m => ({
+  const cap = Math.max(8, Number(limit) || 8);
+  const rawTop = ranked.slice(0, cap).map(m => ({
     id: m.id,
     title: m.title,
     year: m.release_date ? Number(m.release_date.slice(0, 4)) : 0,
@@ -508,12 +597,18 @@ export async function searchTmdb(title, year = '', director = '') {
     poster_url: m.poster_url || rawTop[idx]?.poster_url || ''
   }));
 
+  finalList.hasMoreMatches = ranked.length > cap;
+  finalList.totalRankedCount = ranked.length;
+
   if (qDir) {
-    return finalList.sort((a, b) => {
+    const sortedByDir = finalList.sort((a, b) => {
       const aDir = (a.director || '').toLowerCase().includes(qDir) ? 0 : 1;
       const bDir = (b.director || '').toLowerCase().includes(qDir) ? 0 : 1;
       return aDir - bDir;
     });
+    sortedByDir.hasMoreMatches = finalList.hasMoreMatches;
+    sortedByDir.totalRankedCount = finalList.totalRankedCount;
+    return sortedByDir;
   }
 
   return finalList;
@@ -538,8 +633,8 @@ export async function saveToLibrary(item, entry) {
     await rename(item.sourcePath, `${destFolder}/${item.name}`);
   }
   await db.execute(
-    `INSERT OR REPLACE INTO wishlist_videos (folder_name, title, year, quality, imdb_id, poster_url, director, cast_list, overview, tags, clips, watch_status, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'owned')`,
+    `INSERT OR REPLACE INTO wishlist_videos (folder_name, title, year, quality, imdb_id, poster_url, director, cast_list, overview, tags, clips, runtime, countries, genres, watch_status, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'owned')`,
     [
       cleanFolderName,
       entry.title.trim(),
@@ -552,6 +647,9 @@ export async function saveToLibrary(item, entry) {
       entry.overview || "",
       String(entry.tags || "").trim(),
       String(entry.clips || "").trim(),
+      String(entry.runtime || "").trim(),
+      String(entry.countries || "").trim(),
+      String(entry.genres || "").trim(),
       entry.watch_status || ""
     ]
   );
@@ -592,9 +690,9 @@ export async function saveWantedMovie(movie) {
 
   await db.execute(
     `INSERT INTO wishlist_videos (
-      folder_name, title, year, quality, imdb_id, poster_url, director, cast_list, overview, tags, clips,
+      folder_name, title, year, quality, imdb_id, poster_url, director, cast_list, overview, tags, clips, runtime, countries, genres,
       watch_status, status, media_type, tmdb_id
-    ) VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, 'wanted', 'movie', ?)`,
+    ) VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'wanted', 'movie', ?)`,
     [
       folderName,
       title,
@@ -606,6 +704,9 @@ export async function saveWantedMovie(movie) {
       enriched.overview || movie.overview || '',
       movie.tags || '',
       movie.clips || '',
+      enriched.runtime || movie.runtime || '',
+      enriched.countries || movie.countries || '',
+      enriched.genres || movie.genres || '',
       watchStatus,
       tmdbId
     ]
@@ -649,8 +750,8 @@ export async function updateExistingMovie(oldFolderName, existing, movie, onDisk
     }
   }
   await db.execute(
-    `UPDATE wishlist_videos SET folder_name=?, title=?, year=COALESCE(NULLIF(?,''),year), imdb_id=?, poster_url=?, director=?, cast_list=?, overview=?, tmdb_id=COALESCE(NULLIF(?,0),tmdb_id) WHERE folder_name=?`,
-    [newFolderName, enriched.title, year, enriched.imdb_id || '', enriched.poster_url || '', enriched.director || '', enriched.cast_list || '', enriched.overview || '', tmdbId, oldFolderName]
+    `UPDATE wishlist_videos SET folder_name=?, title=?, year=COALESCE(NULLIF(?,''),year), imdb_id=?, poster_url=?, director=?, cast_list=?, overview=?, runtime=COALESCE(NULLIF(?,''),runtime), countries=COALESCE(NULLIF(?,''),countries), genres=COALESCE(NULLIF(?,''),genres), tmdb_id=COALESCE(NULLIF(?,0),tmdb_id) WHERE folder_name=?`,
+    [newFolderName, enriched.title, year, enriched.imdb_id || '', enriched.poster_url || '', enriched.director || '', enriched.cast_list || '', enriched.overview || '', enriched.runtime || '', enriched.countries || '', enriched.genres || '', tmdbId, oldFolderName]
   );
   const metaLabel = `${enriched.title || oldFolderName}${year ? ` (${year})` : ''}`;
   await logActivity('Updated Metadata', metaLabel, enriched.director || '');
@@ -669,7 +770,7 @@ export async function enrichFilmBatch(list) {
   let localRows = [];
   try {
     const db = await initDb();
-    localRows = await db.select("SELECT tmdb_id, title, year, director, cast_list, imdb_id FROM wishlist_videos");
+    localRows = await db.select("SELECT tmdb_id, title, year, director, cast_list, imdb_id, runtime, countries, genres FROM wishlist_videos");
   } catch (_) {}
 
   const findLocalMeta = (item) => {
@@ -690,9 +791,12 @@ export async function enrichFilmBatch(list) {
           ...item,
           director: item.director || local?.director || '',
           cast_list: item.cast_list || local?.cast_list || '',
-          imdb_id: item.imdb_id || local?.imdb_id || ''
+          imdb_id: item.imdb_id || local?.imdb_id || '',
+          runtime: item.runtime || local?.runtime || '',
+          countries: item.countries || local?.countries || '',
+          genres: item.genres || local?.genres || ''
         };
-        if (merged.director || merged.cast_list) return merged;
+        if ((merged.director || merged.cast_list) && (merged.runtime || merged.countries || merged.genres)) return merged;
         try {
           const full = await fetchEnrichedMovie({
             id: item.id,
@@ -1469,6 +1573,23 @@ export async function searchUniversal(query) {
     fetchJson('tv-search', tvUrl)
   ]);
 
+  if ((mData.results || []).length === 0 && (tData.results || []).length === 0 && q.length >= 5) {
+    const trimmedQ = q.slice(0, -1);
+    const retryMovieUrl = new URL(`https://${host}/3/search/movie`);
+    retryMovieUrl.searchParams.set("api_key", TMDB_API_KEY);
+    retryMovieUrl.searchParams.set("query", trimmedQ);
+    retryMovieUrl.searchParams.set("include_adult", "true");
+    const retryTvUrl = new URL(`https://${host}/3/search/tv`);
+    retryTvUrl.searchParams.set("api_key", TMDB_API_KEY);
+    retryTvUrl.searchParams.set("query", trimmedQ);
+    retryTvUrl.searchParams.set("include_adult", "true");
+    const [rm, rt] = await Promise.all([
+      fetchJson('movie-search-fuzzy', retryMovieUrl),
+      fetchJson('tv-search-fuzzy', retryTvUrl)
+    ]);
+    mData.results = rm.results || [];
+    tData.results = rt.results || [];
+  }
   console.log('[Guppy Search] 2. Initial 3 searches finished');
 
   const rawPeople = (pData.results || []).slice(0, 8);
@@ -2050,9 +2171,9 @@ export async function backfillMissingTvMetadata() {
 export async function backfillMissingMovieMetadata() {
   const db = await initDb();
   const missingRows = await db.select(
-    `SELECT id, tmdb_id, title, year, imdb_id, cast_list, director, overview, poster_url FROM wishlist_videos
+    `SELECT id, tmdb_id, title, year, imdb_id, cast_list, director, overview, poster_url, runtime, countries, genres FROM wishlist_videos
      WHERE (media_type IS NULL OR media_type = 'movie')
-       AND (imdb_id IS NULL OR imdb_id = '' OR cast_list IS NULL OR cast_list = '')`
+       AND (imdb_id IS NULL OR imdb_id = '' OR cast_list IS NULL OR cast_list = '' OR genres IS NULL OR genres = '')`
   );
   if (missingRows.length === 0) return false;
 
@@ -2078,15 +2199,21 @@ export async function backfillMissingMovieMetadata() {
     const nextDir = row.director || meta.director || '';
     const nextOver = row.overview || meta.overview || '';
     const nextPoster = row.poster_url || meta.poster_url || '';
+    const nextRuntime = row.runtime || meta.runtime || '';
+    const nextCountries = row.countries || meta.countries || '';
+    const nextGenres = row.genres || meta.genres || '';
 
     if (
       nextImdb !== (row.imdb_id || '') ||
       nextCast !== (row.cast_list || '') ||
+      nextGenres !== (row.genres || '') ||
+      nextRuntime !== (row.runtime || '') ||
+      nextCountries !== (row.countries || '') ||
       tmdbId !== Number(row.tmdb_id || 0)
     ) {
       await db.execute(
-        `UPDATE wishlist_videos SET tmdb_id = ?, imdb_id = ?, cast_list = ?, director = ?, overview = ?, poster_url = ? WHERE id = ?`,
-        [tmdbId, nextImdb, nextCast, nextDir, nextOver, nextPoster, row.id]
+        `UPDATE wishlist_videos SET tmdb_id = ?, imdb_id = ?, cast_list = ?, director = ?, overview = ?, poster_url = ?, runtime = ?, countries = ?, genres = ? WHERE id = ?`,
+        [tmdbId, nextImdb, nextCast, nextDir, nextOver, nextPoster, nextRuntime, nextCountries, nextGenres, row.id]
       );
       updatedAny = true;
     }
