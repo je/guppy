@@ -45,6 +45,20 @@
   let queryYear = item.year || '';
   let queryDirector = item.director || '';
   let queryMediaType = item.media_type === 'tv' ? 'tv' : 'movie';
+  let editingPoster = false;
+  let justMatched = false;
+  let draftPosterUrl = item.poster_url || '';
+  let combinedLookup = `${item.title || ''}${item.year ? ` (${item.year})` : ''}${item.director ? ` [${item.director}]` : ''}`.trim();
+  function parseCombinedLookup() {
+    let w = (combinedLookup || '').trim();
+    let dir = '';
+    w = w.replace(/\[([^\]]+)\]/g, (_, d) => { dir = d.trim(); return ' '; });
+    let yr = '';
+    w = w.replace(/\(\s*((?:19|20)\d{2})(?:\s*[-–]\s*(?:19|20)\d{2})?\s*\)/g, (_, y1) => { yr = y1; return ' '; });
+    queryTitle = w.replace(/\s+/g, ' ').trim();
+    queryYear = yr;
+    queryDirector = dir;
+  }
 
   let localWatch = item.watch_status || '';
   let lastFolder = item.folder_name;
@@ -238,6 +252,8 @@
 {:else}
   <article
     class="catalog-entry"
+    class:entry-row={auditIconTitle}
+    class:is-ready={auditIconTitle && justMatched}
     class:media-tv={item.media_type === 'tv'}
     class:media-movie={(item.media_type || 'movie') === 'movie'}
     class:flag-owned={onDrive && item.status !== 'wanted'}
@@ -245,7 +261,7 @@
     class:flag-wanted={item.status === 'wanted'}
   >
     <div class="entry-body">
-      <button type="button" class="poster-btn" on:click={() => onOpenMovie?.(item)} title="Open movie details">
+      <button type="button" class="poster-btn" on:click={() => { if (auditIconTitle) { draftPosterUrl = item.poster_url || ''; editingPoster = !editingPoster; } else { onOpenMovie?.(item); } }} title={auditIconTitle ? 'Click to set Poster URL' : 'Open movie details'}>
         {#if item.poster_url}
           <img
             src={item.poster_url}
@@ -269,22 +285,6 @@
               {/if}
             </span>
             <span class="mono">({item.year || 'n.d.'})</span>
-            <button
-              type="button"
-              class="icon-btn"
-              style="color: {auditIconColor}; border-color: {auditIconColor};"
-              title="Open details"
-              aria-label="Open details"
-              on:click={() => onOpenMovie?.(item)}
-            >
-              {#if item.media_type === 'tv'}
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="15" x="2" y="7" rx="2" ry="2"/><polyline points="17 2 12 7 7 2"/></svg>
-              {:else if isAdultCard}
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
-              {:else}
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M17 3v18"/><path d="M3 12h18"/></svg>
-              {/if}
-            </button>
           {:else}
             <button
               type="button"
@@ -302,6 +302,24 @@
         </div>
 
         <div class="badge-action-row">
+          {#if auditIconTitle}
+            <button
+              type="button"
+              class="icon-btn"
+              style="color: {auditIconColor}; border-color: {auditIconColor};"
+              title="Open details"
+              aria-label="Open details"
+              on:click={() => onOpenMovie?.(item)}
+            >
+              {#if item.media_type === 'tv'}
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="15" x="2" y="7" rx="2" ry="2"/><polyline points="17 2 12 7 7 2"/></svg>
+              {:else if isAdultCard}
+                <Icon name="adult" size={13} />
+              {:else}
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M17 3v18"/><path d="M3 12h18"/></svg>
+              {/if}
+            </button>
+          {/if}
           {#if isIncompleteSeason}
             <span class="tag tag-wanted">Incomplete</span>
           {:else if item.status === 'wanted'}
@@ -482,22 +500,37 @@
       </div>
     </div>
 
+    {#if editingPoster}
+      <form class="relookup-bar" style="display: flex; align-items: center; gap: 6px;" on:submit|preventDefault={() => { onSelect?.({ ...item, poster_url: draftPosterUrl.trim() }); editingPoster = false; }}>
+        <input type="text" style="flex: 1; min-width: 200px;" placeholder="Paste poster image URL (https://…)" bind:value={draftPosterUrl} />
+        <button type="submit" class="btn-save">Save Poster</button>
+        <button type="button" class="btn-cancel" on:click={() => editingPoster = false}>Cancel</button>
+      </form>
+    {/if}
+
     {#if showLookupBox}
-      <form class="relookup-bar" on:submit|preventDefault={() => onLookup?.(queryTitle, queryYear, queryDirector, queryMediaType)}>
-        <input type="text" placeholder="Title" bind:value={queryTitle} />
-        <input class="g-st-43ae34" type="number" placeholder="Year" bind:value={queryYear} />
-        <input class="g-st-d44c18" type="text" placeholder="Director" bind:value={queryDirector} />
-        <button
-          type="button"
-          class="btn-secondary"
-          on:click={() => queryMediaType = queryMediaType === 'tv' ? 'movie' : 'tv'}
-          title="Toggle Movie vs. TV lookup"
-        >
-          {queryMediaType === 'tv' ? 'TV' : 'Movie'}
-        </button>
+      <form class="relookup-bar" style="display: flex; align-items: center; gap: 6px;" on:submit|preventDefault={() => { parseCombinedLookup(); onLookup?.(queryTitle, queryYear, queryDirector, queryMediaType); }}>
+        <div style="display: flex; align-items: stretch; flex: 1; min-width: 0;">
+          <button
+            type="button"
+            class="btn-secondary"
+            style="display: inline-flex; align-items: center; justify-content: center; width: 32px; padding: 0; border-right: none; flex-shrink: 0;"
+            on:click={() => queryMediaType = queryMediaType === 'tv' ? 'movie' : 'tv'}
+            title={queryMediaType === 'tv' ? 'TV lookup (click to switch to Movie)' : 'Movie lookup (click to switch to TV)'}
+            aria-label={queryMediaType === 'tv' ? 'TV lookup' : 'Movie lookup'}
+          >
+            <Icon name={queryMediaType === 'tv' ? 'tv' : 'movie'} size={14} />
+          </button>
+          <input
+            type="text"
+            style="flex: 1; min-width: 160px; width: 100%;"
+            placeholder="title (year) [director] or tt1234567"
+            bind:value={combinedLookup}
+          />
+        </div>
         <button type="submit" class="btn-save">TMDb</button>
         {#if onWikiLookup}
-          <button type="button" class="btn-secondary" on:click={() => onWikiLookup?.(queryTitle, queryYear, queryDirector)}>Wiki</button>
+          <button type="button" class="btn-secondary" on:click={() => { parseCombinedLookup(); onWikiLookup?.(queryTitle, queryYear, queryDirector); }}>Wiki</button>
         {/if}
         <button type="button" class="btn-cancel" on:click={() => showLookupBox = false}>Close</button>
       </form>
@@ -510,8 +543,8 @@
             class="candidate-row"
             role="button"
             tabindex="0"
-            on:click={() => { onSelect(match); showLookupBox = false; }}
-            on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(match); showLookupBox = false; } }}
+            on:click={() => { justMatched = true; onSelect(match); showLookupBox = false; }}
+            on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); justMatched = true; onSelect(match); showLookupBox = false; } }}
           >
             {#if match.poster_url || match.poster_path}
               <img src={match.poster_url || (posterSmall + match.poster_path)} alt={match.title} />
@@ -530,7 +563,7 @@
                     <button
                       type="button"
                       class="tax-pill season-pill"
-                      on:click|stopPropagation={() => { onSelect({ ...match, season_number: sNum }); showLookupBox = false; }}
+                      on:click|stopPropagation={() => { justMatched = true; onSelect({ ...match, season_number: sNum }); showLookupBox = false; }}
                     >
                       S{String(sNum).padStart(2, '0')}
                     </button>

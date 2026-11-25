@@ -16,10 +16,10 @@ header.app-header {
   z-index: 60;
   background: #fffff8;
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-start;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px 16px;
+  gap: 8px 0;
   padding: 12px 0;
   min-height: 52px;
   box-sizing: border-box;
@@ -29,7 +29,7 @@ header.app-header {
 header.app-header .header-left {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 0;
   flex: 0 0 auto;
   max-width: 100%;
 }
@@ -39,6 +39,7 @@ header.app-header .header-mid {
   align-items: center;
   flex-wrap: wrap;
   gap: 6px 8px;
+  margin-left: 6px;
 }
 
 header.app-header .watch-status-bar {
@@ -300,7 +301,23 @@ header.app-header .header-right {
   width: 200px;
   box-sizing: border-box;
 }
-.person-search input:focus { outline: none; border-color: #111; }
+.person-search input:focus, .person-search textarea:focus { outline: none; border-color: #111; }
+.person-search textarea {
+  background: #fff;
+  color: #111;
+  border: 1px solid #b8b4a6;
+  padding: 5px 10px;
+  height: 30px;
+  min-height: 0;
+  line-height: 18px;
+  font-size: 0.82rem;
+  font-family: inherit;
+  width: 220px;
+  box-sizing: border-box;
+  display: block;
+  resize: none;
+  overflow: hidden;
+}
 
 .add-section, .staged-section {
   margin-top: 18px;
@@ -484,8 +501,21 @@ header.app-header .header-right {
   border-bottom: 1px solid #d8d5c8;
 }
 .two-col { display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 36px; margin-top: 20px; align-items: start; }
-.entry-row { padding: 14px 0; border-bottom: 1px solid #e2dfd5; }
-.entry-row.is-ready { background: #dcdcdc; padding: 14px 12px; border-bottom-color: #b8b4a6; }
+.entry-row {
+  padding: 14px 12px;
+  margin-bottom: 10px;
+  border: 4px solid transparent;
+  background-color: #f9f7ef;
+  background-image: linear-gradient(#f9f7ef, #f9f7ef), repeating-linear-gradient(-45deg, #d8d1be 0, #d8d1be 6px, #f2ede0 6px, #f2ede0 12px);
+  background-origin: border-box;
+  background-clip: padding-box, border-box;
+}
+.entry-row.is-ready {
+  background-color: #dcdcdc;
+  background-image: none;
+  border: 2px solid #2b7a3d;
+  padding: 14px 12px;
+}
 .row-main { display: flex; gap: 14px; align-items: flex-start; }
 .row-content { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
 .source-label { font-size: 0.78rem; color: #555; word-break: break-all; }
@@ -731,8 +761,10 @@ main.container {
   text-decoration: none !important;
 }
 
-.title-link-btn:hover {
-  opacity: 0.72;
+.title-link-btn:hover,
+.person-link:hover,
+.activity-log-row .icon-btn:hover {
+  opacity: 0.62;
 }
 
 /* Remove all underlines from links and link-style buttons across the app */
@@ -873,3 +905,43 @@ a:visited,
 .g-st-678404 { display: inline-flex; align-items: center; gap: 6px; }
 
 .activity-log-row .tag { width: 152px; text-align: center; flex-shrink: 0; }
+
+header.app-header .adult-toggle { width: 16px; min-width: 16px; padding: 0; margin: 0; }
+
+/* Unified Global Form Controls */
+input[type="text"],
+input[type="number"],
+input[type="search"],
+select {
+  background: #fff;
+  color: #111;
+  border: 1px solid #b8b4a6;
+  border-radius: 0;
+  padding: 0 8px;
+  height: 30px;
+  font-size: 0.85rem;
+  font-family: inherit;
+  box-sizing: border-box;
+  -webkit-appearance: none;
+  appearance: none;
+}
+textarea {
+  background: #fff;
+  color: #111;
+  border: 1px solid #b8b4a6;
+  border-radius: 0;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+input[type="text"]:focus,
+input[type="number"]:focus,
+input[type="search"]:focus,
+textarea:focus,
+select:focus {
+  outline: none;
+  border-color: #111;
+}
+.tag-row input {
+  height: 30px;
+  font-size: 0.85rem;
+}

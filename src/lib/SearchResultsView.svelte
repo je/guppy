@@ -205,6 +205,7 @@
   {#if loading}
     <p class="muted">Searching TMDb…</p>
   {:else if results}
+    {#if results.queryName}<div class="section-bar"><h2>Results for “{results.queryName}”</h2></div>{/if}
     {#if results.people?.length > 0}
       <div class="section-bar">
         <h2>{results.people.length} Cast and Crew</h2>
@@ -303,8 +304,13 @@
                       src={poster}
                       alt={film.title}
                       class="poster"
-                      on:error={(e) => { e.currentTarget.style.display = 'none'; }}
+                      on:error={(e) => {
+                        e.currentTarget.style.display = 'none';
+                        const blank = e.currentTarget.parentElement?.querySelector('.poster-blank');
+                        if (blank) blank.style.display = 'flex';
+                      }}
                     />
+                    <div class="poster-blank" style="display: none;">No Poster</div>
                   {:else}
                     <div class="poster-blank">No Poster</div>
                   {/if}

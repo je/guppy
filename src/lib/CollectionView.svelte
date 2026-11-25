@@ -2,6 +2,7 @@
   import { onDestroy } from 'svelte';
   import LoggedCard from '$lib/LoggedCard.svelte';
   import Icon from '$lib/Icon.svelte';
+  import { fuzzyTextIncludes } from '$lib/guppyStore.js';
 
   export let databaseEntries = [];
   export let diskFolders = [];
@@ -19,7 +20,16 @@
   export let collectionFilter = 'collected';
 
   let layoutMode = 'cards';
-  let sortBy = 'recent';
+  let sortBy = 'shuffle';
+  let shuffleSeed = Math.random();
+  function seededWeight(str, seed) {
+    let h = Math.floor(seed * 2147483647) || 1;
+    const s = String(str || '');
+    for (let i = 0; i < s.length; i++) {
+      h = Math.imul(h ^ s.charCodeAt(i), 2654435761);
+    }
+    return ((h ^ (h >>> 16)) >>> 0) / 4294967295;
+  }
   let visibleLimit = 60;
   let sentinelEl = null;
   let observer = null;
@@ -114,6 +124,9 @@
   );
 
   $: sortedEntries = [...filtered].sort((a, b) => {
+    if (sortBy === 'shuffle') {
+      return seededWeight(a.folder_name || a.title, shuffleSeed) - seededWeight(b.folder_name || b.title, shuffleSeed);
+    }
     if (sortBy === 'title') {
       return (a.title || a.folder_name || '').localeCompare(b.title || b.folder_name || '');
     }
@@ -189,7 +202,8 @@
         </button>
       </div>
 
-      <select class="sort-select" bind:value={sortBy} aria-label="Sort catalog">
+      <select class="sort-select" bind:value={sortBy} on:change={() => { if (sortBy === 'shuffle') shuffleSeed = Math.random(); }} aria-label="Sort catalog">
+        <option value="shuffle">Shuffle</option>
         <option value="recent">Added</option>
         <option value="title">Title A–Z</option>
         <option value="year_desc">Year ↓</option>

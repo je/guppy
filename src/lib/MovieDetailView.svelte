@@ -25,6 +25,8 @@
     .filter(f => /\.(mp4|mkv|avi|mov|m4v|wmv|webm)$/i.test(f) && !/trailer|sample/i.test(f))
     .sort((a, b) => a.localeCompare(b))
     .at(0) || '';
+  let episodesList = [];
+  $: ownedEpCount = (Array.isArray(episodesList) ? episodesList : []).filter(e => Boolean(e.file_name)).length;
   $: tvFallbackExt = (() => {
     const owned = (Array.isArray(episodesList) ? episodesList : []).find(e => e.file_name);
     return owned?.file_name && owned.file_name.includes('.') ? owned.file_name.split('.').pop().toUpperCase() : '';
@@ -67,7 +69,6 @@
 
   $: rootDir = getMediaRoot(movie);
 
-    let episodesList = [];
   let lastEpisodesJson = '';
   $: if (movie && (movie.episodes_json || '') !== lastEpisodesJson) {
     lastEpisodesJson = movie.episodes_json || '';
@@ -532,7 +533,6 @@
       {/if}
 
       {#if episodesList.length > 0}
-        {@const ownedEpCount = episodesList.filter(e => Boolean(e.file_name)).length}
         <div class="sub-block">
           <h3>
             Episodes ({ownedEpCount} of {episodesList.length} on Drive)

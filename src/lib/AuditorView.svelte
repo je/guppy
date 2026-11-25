@@ -1,3 +1,7 @@
+<script context="module">
+  let cachedMissingSidecars = null;
+  let lastSidecarScanKey = '';
+</script>
 <script>
   import Icon from '$lib/Icon.svelte';
   import { onMount } from 'svelte';
@@ -16,10 +20,39 @@
   export let databaseEntries = [];
   export let diskFolders = [];
   export let importQueue = [];
+  export let stagedBanner = '';
   export let inputs = {};
   export let searchResults = {};
   export let loadingLookup = {};
   export let showBulkForm = false;
+  export let auditResetNonce = 0;
+  export let openMetafilesNonce = 0;
+  export let syncStatus = '';
+  export let ownedCount = 0;
+  export let onRewriteMetafiles = null;
+  export let onRescanLibrary = null;
+  export let onExportJson = null;
+  let confirmRescan = false;
+  let confirmRewrite = false;
+  let confirmWriteMissing = false;
+  let lastOpenMetafilesNonce = 0;
+  $: if (openMetafilesNonce !== lastOpenMetafilesNonce) {
+    lastOpenMetafilesNonce = openMetafilesNonce;
+    activeHealthFilter = 'metafiles';
+    showRecentActivity = false;
+    onClearSubViews?.();
+  }
+  export let onClearSubViews = null;
+  let showRecentActivity = true;
+  let lastResetNonce = 0;
+  $: if (auditResetNonce !== lastResetNonce) {
+    lastResetNonce = auditResetNonce;
+    activeHealthFilter = '';
+    if (showBulkForm || importQueue.length > 0) showRecentActivity = false;
+  }
+  $: if (showBulkForm || importQueue.length > 0) {
+    showRecentActivity = false;
+  }
   export let onAudit;
   export let onClearImport;
   export let onLookup;
@@ -36,10 +69,10 @@
   export let onToggleBulk;
   export let saveErrors = {};
 
-  let activeHealthFilter = '';
+  export let activeHealthFilter = '';
   let activityEntries = [];
   let activityLimit = 40;
-  let missingSidecars = [];
+  let missingSidecars = cachedMissingSidecars || [];
   let scanningSidecars = false;
 
   function isAdultEntry(entry) {
@@ -115,12 +148,24 @@
   }
   let writingMissingSidecars = '';
 
-  async function refreshAuditExtras() {
+  async function refreshAuditExtras(forceScan = false) {
     activityEntries = await loadActivityLog(activityLimit).catch(() => []);
     if (databaseEntries.length > 0 && diskFolders.length > 0) {
+      const scanKey = `${databaseEntries.length}:${diskFolders.length}`;
+      if (!forceScan && cachedMissingSidecars !== null && scanKey === lastSidecarScanKey) {
+        missingSidecars = cachedMissingSidecars;
+        return;
+      }
+      if (scanningSidecars) return;
       scanningSidecars = true;
-      missingSidecars = await scanMissingSidecarsOnDisk(databaseEntries, diskFolders).catch(() => []);
-      scanningSidecars = false;
+      try {
+        const found = await scanMissingSidecarsOnDisk(databaseEntries, diskFolders).catch(() => []);
+        missingSidecars = found;
+        cachedMissingSidecars = found;
+        lastSidecarScanKey = scanKey;
+      } finally {
+        scanningSidecars = false;
+      }
     } else {
       missingSidecars = [];
     }
@@ -153,24 +198,37 @@
     }
   });
 
+  $: missingMetafiles = missingSidecars;
+
   $: activeHealthList =
-    activeHealthFilter === 'sidecars' ? missingSidecars :
-    activeHealthFilter === 'poster' ? noPosterEntries :
+    activeHealthFilter === 'metafiles' ? missingMetafiles :
     activeHealthFilter === 'imdb' ? noImdbEntries :
     activeHealthFilter === 'quality' ? noQualityEntries :
     activeHealthFilter === 'tv' ? incompleteTvEntries :
     [];
 
   $: activeHealthLabel =
-    activeHealthFilter === 'sidecars' ? 'Missing Poster / .nfo on Drive' :
-    activeHealthFilter === 'poster' ? 'Missing Poster URL in DB' :
-    activeHealthFilter === 'imdb' ? 'Unmatched (No TMDb / IMDb)' :
-    activeHealthFilter === 'quality' ? 'Missing Quality Tag' :
-    activeHealthFilter === 'tv' ? 'TV Seasons Missing Episode Files' :
+    activeHealthFilter === 'metafiles' ? 'Missing Poster or NFO Metafiles' :
+    activeHealthFilter === 'imdb' ? 'Unmatched in TMDB/Wikipedia' :
+    activeHealthFilter === 'quality' ? 'Unknown File Quality' :
+    activeHealthFilter === 'tv' ? 'Seasons with Missing Episodes' :
     '';
 
+  function resetToAuditHome() {
+    activeHealthFilter = '';
+    showRecentActivity = true;
+    onClearSubViews?.();
+  }
+
   function toggleHealthFilter(key) {
-    activeHealthFilter = activeHealthFilter === key ? '' : key;
+    const next = activeHealthFilter === key ? '' : key;
+    activeHealthFilter = next;
+    if (next) {
+      showRecentActivity = false;
+      onClearSubViews?.();
+    } else if (!showBulkForm && importQueue.length === 0) {
+      showRecentActivity = true;
+    }
   }
 
   async function handleWriteMissingSidecars() {
@@ -180,7 +238,7 @@
       await syncMissingJellyfinSidecars(missingSidecars, (done, total) => {
         writingMissingSidecars = `Writing ${done}/${total}…`;
       });
-      await refreshAuditExtras();
+      await refreshAuditExtras(true);
     } catch (err) {
       alert(`Failed writing missing metafiles: ${err}`);
     } finally {
@@ -194,31 +252,23 @@
   }
 </script>
 
-<div class="audit-health-bar">
-  <span class="audit-health-label">Catalog Health:</span>
+{#if !showBulkForm && importQueue.length === 0}
+<div class="audit-health-bar" style="display: flex; flex-wrap: wrap; align-items: center; gap: 6px; width: 100%;">
   <button
     type="button"
     class="audit-health-pill"
-    class:active={activeHealthFilter === 'sidecars'}
-    on:click={() => toggleHealthFilter('sidecars')}
+    class:active={activeHealthFilter === 'metafiles'}
+    on:click={() => toggleHealthFilter('metafiles')}
   >
-    Missing Poster/NFO ({scanningSidecars ? '…' : missingSidecars.length})
+    Missing Metafiles ({scanningSidecars ? '…' : missingMetafiles.length})
   </button>
   <button
     type="button"
     class="audit-health-pill"
-    class:active={activeHealthFilter === 'tv'}
-    on:click={() => toggleHealthFilter('tv')}
+    class:active={activeHealthFilter === 'quality'}
+    on:click={() => toggleHealthFilter('quality')}
   >
-    TV Missing Episodes ({incompleteTvEntries.length})
-  </button>
-  <button
-    type="button"
-    class="audit-health-pill"
-    class:active={activeHealthFilter === 'poster'}
-    on:click={() => toggleHealthFilter('poster')}
-  >
-    Missing Poster URL ({noPosterEntries.length})
+    Unknown Quality ({noQualityEntries.length})
   </button>
   <button
     type="button"
@@ -231,29 +281,94 @@
   <button
     type="button"
     class="audit-health-pill"
-    class:active={activeHealthFilter === 'quality'}
-    on:click={() => toggleHealthFilter('quality')}
+    class:active={activeHealthFilter === 'tv'}
+    on:click={() => toggleHealthFilter('tv')}
   >
-    Missing Quality ({noQualityEntries.length})
+    Missing Episodes ({incompleteTvEntries.length})
   </button>
+
+  <div style="margin-left: auto; display: inline-flex; align-items: center; gap: 6px;">
+    {#if !confirmRescan}
+      <button
+        type="button"
+        class="audit-health-pill"
+        style="display: inline-flex; align-items: center; gap: 5px;"
+        on:click={() => { confirmRescan = true; resetToAuditHome(); }}
+      >
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
+        <span>Rescan Library</span>
+      </button>
+    {:else}
+      <button
+        type="button"
+        class="audit-health-pill active"
+        on:click={async () => { confirmRescan = false; cachedMissingSidecars = null; await onRescanLibrary?.(); await refreshAuditExtras(true); }}
+      >
+        Confirm Rescan?
+      </button>
+      <button
+        type="button"
+        class="audit-health-pill"
+        on:click={() => { confirmRescan = false; }}
+      >
+        Cancel
+      </button>
+    {/if}
+
+    <button
+      type="button"
+      class="audit-health-pill"
+      style="display: inline-flex; align-items: center; gap: 5px;"
+      on:click={() => { resetToAuditHome(); onExportJson?.(); }}
+    >
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      <span>Export JSON</span>
+    </button>
+  </div>
 </div>
+{/if}
 
 {#if activeHealthFilter}
   <section class="staged-section">
     <div class="section-bar">
-      <h2>{activeHealthLabel} <span class="count">({activeHealthList.length})</span></h2>
-      <div class="g-st-133d27">
-        {#if activeHealthFilter === 'sidecars' && missingSidecars.length > 0}
-          <button
-            type="button"
-            class="btn-primary"
-            disabled={Boolean(writingMissingSidecars)}
-            on:click={handleWriteMissingSidecars}
-          >
-            {writingMissingSidecars || `Write Missing Metafiles (${missingSidecars.length})`}
-          </button>
+      <h2>{activeHealthList.length} {activeHealthLabel}</h2>
+      <div class="g-st-133d27" style="display: flex; align-items: center; gap: 8px;">
+        {#if activeHealthFilter === 'metafiles'}
+          {#if missingSidecars.length > 0}
+            {#if writingMissingSidecars}
+              <button type="button" class="btn-primary" disabled>{writingMissingSidecars}</button>
+            {:else if !confirmWriteMissing}
+              <button
+                type="button"
+                class="btn-primary"
+                on:click={() => { confirmWriteMissing = true; confirmRewrite = false; }}
+              >
+                Write Missing Metafiles ({missingSidecars.length})
+              </button>
+            {:else}
+              <button
+                type="button"
+                class="btn-primary"
+                on:click={() => { confirmWriteMissing = false; handleWriteMissingSidecars(); }}
+              >
+                Confirm Write ({missingSidecars.length} Folders)?
+              </button>
+              <button type="button" class="btn-secondary" on:click={() => { confirmWriteMissing = false; }}>Cancel</button>
+            {/if}
+          {/if}
+          {#if syncStatus}
+            <button type="button" class="btn-secondary" disabled>{syncStatus}</button>
+          {:else if !confirmRewrite}
+            <button type="button" class="btn-secondary" disabled={ownedCount === 0} on:click={() => { confirmRewrite = true; confirmWriteMissing = false; }}>
+              Write All Metafiles
+            </button>
+          {:else}
+            <button type="button" class="btn-primary" on:click={() => { confirmRewrite = false; onRewriteMetafiles?.(); }}>
+              Confirm Rewrite ({ownedCount} Folders)?
+            </button>
+            <button type="button" class="btn-secondary" on:click={() => { confirmRewrite = false; }}>Cancel</button>
+          {/if}
         {/if}
-        <button type="button" class="btn-text" on:click={() => activeHealthFilter = ''}>Close</button>
       </div>
     </div>
     {#if activeHealthList.length > 0}
@@ -293,12 +408,17 @@
   />
 {/if}
 
-{#if importQueue.length > 0}
+{#if importQueue.length > 0 || stagedBanner}
   <section class="staged-section">
-    <div class="section-bar">
-      <h2>Staged Import <span class="count">({importQueue.length})</span></h2>
-      <button class="btn-text" on:click={onClearImport}>Close</button>
-    </div>
+    {#if importQueue.length > 0}
+      <div class="section-bar">
+        <h2>Staged Import <span class="count">({importQueue.length})</span></h2>
+        <button class="btn-text" on:click={onClearImport}>Close</button>
+      </div>
+    {/if}
+    {#if stagedBanner}
+      <div class="error-banner" style="margin-bottom: 10px; background: #edf7ed; border-color: #2b7a3d; color: #1b4d27;">{stagedBanner}</div>
+    {/if}
     {#each importQueue as item (item.key)}
       <MovieCard
         {item}
@@ -320,6 +440,7 @@
   </section>
 {/if}
 
+{#if !showBulkForm && importQueue.length === 0 && !activeHealthFilter}
 <div class="two-col">
   <section>
     <div class="section-bar"><h2>Unlogged on Drive <span class="count">({orphans.length})</span></h2></div>
@@ -365,13 +486,12 @@
     {/each}
   </section>
 </div>
+{/if}
 
+{#if showRecentActivity}
 <section class="activity-log-section">
   <div class="section-bar">
     <h2>Recent Activity <span class="count">({activityEntries.length})</span></h2>
-    {#if activityEntries.length > 0}
-      <button type="button" class="btn-text" on:click={handleClearLog}>Clear Log</button>
-    {/if}
   </div>
   {#if activityEntries.length > 0}
     <div class="activity-log-list">
@@ -392,10 +512,19 @@
             >
               <Icon name={matchedEntry.media_type === 'tv' ? 'tv' : (isAdultEntry(matchedEntry) ? 'adult' : 'movie')} size={13} />
             </button>
+            <button
+              type="button"
+              class="title-link-btn activity-title"
+              title={getAuditDetailTooltip(matchedEntry)}
+              on:click={() => onOpenMovie(matchedEntry)}
+            >{log.title}</button>
+            {#if matchedEntry.year}
+              <span class="mono">({matchedEntry.year})</span>
+            {/if}
           {:else}
             <span style="display: inline-block; width: 24px; flex-shrink: 0;"></span>
+            <span class="activity-title">{log.title}</span>
           {/if}
-          <span class="activity-title">{log.title}</span>
           {#if log.detail}
             <span class="muted">({log.detail})</span>
           {/if}
@@ -415,3 +544,4 @@
     <p class="empty-note">No recent library changes recorded yet.</p>
   {/if}
 </section>
+{/if}

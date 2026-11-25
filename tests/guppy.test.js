@@ -75,3 +75,115 @@ test('Critical regressions stay guarded across components', () => {
   assert.ok(cv.includes('requiredTags'), 'CollectionView must support [tag1, tag2] multi-tag filter');
   assert.ok(cv.includes('yearMin'), 'CollectionView must support YYYY-YYYY year range filter');
 });
+
+test('CollectionView imports fuzzyTextIncludes and has no undefined helpers', () => {
+  const cv = fs.readFileSync('src/lib/CollectionView.svelte', 'utf8');
+  assert.ok(cv.includes("import { fuzzyTextIncludes } from '$lib/guppyStore.js';"), 'CollectionView must import fuzzyTextIncludes');
+  assert.ok(cv.includes('fuzzyTextIncludes(v, textQuery)'), 'CollectionView must call fuzzyTextIncludes');
+});
+
+test('searchUniversal builds valid image.tmdb.org poster URLs and resolves missing IMDb IDs', async () => {
+  const origWindow = globalThis.window;
+  const mockFetch = async (url) => {
+    const u = String(url);
+    if (u.includes('/3/search/movie')) {
+      return new Response(JSON.stringify({
+        results: [{ id: 999111, title: 'Cannon Fodder', release_date: '2025-05-01', poster_path: '/cf.jpg', overview: 'Test' }]
+      }), { status: 200 });
+    }
+    if (u.includes('/3/movie/999111')) {
+      return new Response(JSON.stringify({
+        id: 999111, title: 'Cannon Fodder', release_date: '2025-05-01', poster_path: '/cf.jpg', imdb_id: null, credits: { crew: [], cast: [] }
+      }), { status: 200 });
+    }
+    if (u.includes('list=search')) {
+      return new Response(JSON.stringify({
+        query: { search: [{ title: 'Q123456' }] }
+      }), { status: 200 });
+    }
+    if (u.includes('wbgetentities')) {
+      return new Response(JSON.stringify({
+        entities: { Q123456: { claims: { P345: [{ mainsnak: { datavalue: { value: 'tt37545848' } } }] } } }
+      }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ results: [] }), { status: 200 });
+  };
+  globalThis.window = { fetch: mockFetch };
+  try {
+    const res = await store.searchUniversal('Cannon Fodder');
+    assert.equal(res.movies.length, 1);
+    assert.equal(res.movies.at(0).poster_url, ["https:/", "image.tmdb.org", "t", "p", "w300", "cf.jpg"].join("/"));
+    assert.equal(res.movies.at(0).imdb_id, 'tt37545848');
+  } finally {
+    globalThis.window = origWindow;
+  }
+});
+
+test('fetchEnrichedMovie resolves missing IMDb ID via IMDb suggestion first-letter bucket', async () => {
+  const origWindow = globalThis.window;
+  globalThis.window = {
+    fetch: async (url) => {
+      const u = String(url);
+      if (u.includes('/3/movie/888222')) {
+        return new Response(JSON.stringify({
+          id: 888222, title: 'Cannon Fodder', release_date: '2025-05-01', poster_path: '/cf.jpg', imdb_id: null, credits: { crew: [], cast: [] }
+        }), { status: 200 });
+      }
+      if (u.includes('/suggestion/c/Cannon%20Fodder.json')) {
+        return new Response(JSON.stringify({
+          d: [{ id: 'tt37545848', l: 'Cannon Fodder', y: 2025 }]
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    }
+  };
+  try {
+    const enriched = await store.fetchEnrichedMovie({ id: 888222, title: 'Cannon Fodder', release_date: '2025-05-01' });
+    assert.equal(enriched.imdb_id, 'tt37545848');
+  } finally {
+    globalThis.window = origWindow;
+  }
+});
+
+test('searchUniversal enforces strict [adult] filtering and title + date range + keyword filtering', async () => {
+  const origWindow = globalThis.window;
+  globalThis.window = {
+    fetch: async (url) => {
+      const u = String(url);
+      if (u.includes('/3/search/keyword')) {
+        return new Response(JSON.stringify({ results: [{ id: 555, name: 'comedy' }] }), { status: 200 });
+      }
+      if (u.includes('/3/search/movie')) {
+        return new Response(JSON.stringify({
+          results: [
+            { id: 101, title: 'Some Like It Hot', release_date: '1959-03-29', adult: false, poster_path: '/slih.jpg' },
+            { id: 102, title: 'Some Adult Title', release_date: '1975-06-01', adult: true, poster_path: '/sat.jpg' },
+            { id: 103, title: 'Some Later Comedy', release_date: '1962-04-10', adult: false, poster_path: '/slc.jpg' }
+          ]
+        }), { status: 200 });
+      }
+      if (u.includes('/3/movie/101/keywords')) {
+        return new Response(JSON.stringify({ keywords: [{ id: 555, name: 'comedy' }] }), { status: 200 });
+      }
+      if (u.includes('/3/movie/103/keywords')) {
+        return new Response(JSON.stringify({ keywords: [] }), { status: 200 });
+      }
+      if (u.includes('/3/movie/')) {
+        return new Response(JSON.stringify({ id: 101, credits: { crew: [], cast: [] } }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ results: [] }), { status: 200 });
+    }
+  };
+  try {
+    const adultRes = await store.searchUniversal('some [adult]');
+    assert.deepEqual(adultRes.movies.map(m => m.title), ['Some Adult Title']);
+
+    const safeRes = await store.searchUniversal('some');
+    assert.deepEqual(safeRes.movies.map(m => m.title), ['Some Like It Hot', 'Some Later Comedy']);
+
+    const comboRes = await store.searchUniversal('some (1955-1965) [comedy]');
+    assert.deepEqual(comboRes.movies.map(m => m.title), ['Some Like It Hot']);
+  } finally {
+    globalThis.window = origWindow;
+  }
+});

@@ -26,6 +26,7 @@ async function getRemoteServer() {
   if (resolvedRemoteServer !== null) return resolvedRemoteServer;
 
   if (typeof window !== 'undefined') {
+    if (window.__GUPPY_FORCE_HOST__) { resolvedRemoteServer = ''; return ''; }
     if (!window.__TAURI_INTERNALS__) {
       resolvedRemoteServer = `${window.location.protocol}//${window.location.hostname}:${GUPPY_CONFIG.hostPort}`;
       return resolvedRemoteServer;
@@ -124,7 +125,7 @@ async function callRemote(endpoint, payload) {
 
 const Database = {
   load: async (connStr) => {
-    if (await getRemoteServer()) {
+    if ((await getRemoteServer()) || (typeof window !== 'undefined' && !window.__TAURI_INTERNALS__)) {
       return {
         select: async (sql, params = []) => (await callRemote('/api/sql/select', { sql, params })).rows,
         execute: async (sql, params = []) => await callRemote('/api/sql/execute', { sql, params })
@@ -432,9 +433,104 @@ export async function clearActivityLog() {
   await db.execute(`DELETE FROM activity_log`);
 }
 
+async function lookupImdbTtFallback(title, year, director = '') {
+  const cleanTitle = String(title || '').trim();
+  if (!cleanTitle) return '';
+  const cleanDir = String(director || '').split(',').at(0).trim();
+  const norm = (s) => String(s || '')
+    .replace(/\s*\((?:[IVX]+|(?:19|20)\d{2})\)\s*$/i, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '');
+  const targetNorm = norm(cleanTitle);
+  const targetYear = Number(year) || 0;
+
+  // 1. Query IMDb public suggestion endpoint with Title + Director, Title + Year, and Title
+  const suggestQueries = [
+    ...(cleanDir ? [`${cleanTitle} ${cleanDir}`] : []),
+    ...(targetYear ? [`${cleanTitle} ${targetYear}`] : []),
+    cleanTitle
+  ];
+  for (const sq of suggestQueries) {
+    try {
+      const firstChar = (sq.toLowerCase().replace(/[^a-z0-9]/g, '').charAt(0) || 'x');
+      const url = `${GUPPY_CONFIG.imdbSuggestBase}/${firstChar}/${encodeURIComponent(sq)}.json`;
+      const res = await tauriFetch(url, { method: 'GET', headers: { Accept: 'application/json' } });
+      const data = await res.json();
+      const list = Array.isArray(data?.d) ? data.d : [];
+      const exactTitleHits = list
+        .filter(entry => entry?.id && /^tt\d{6,9}$/i.test(entry.id) && norm(entry.l) === targetNorm)
+        .sort((a, b) => {
+          if (!targetYear) return 0;
+          const da = a.y ? Math.abs(Number(a.y) - targetYear) : 50;
+          const db = b.y ? Math.abs(Number(b.y) - targetYear) : 50;
+          return da - db;
+        });
+      if (exactTitleHits.length > 0) {
+        const best = exactTitleHits.at(0);
+        if (!targetYear || !best.y || Math.abs(Number(best.y) - targetYear) <= 5) {
+          return best.id.toLowerCase();
+        }
+      }
+    } catch {}
+  }
+
+  // 2. Fallback to Wikidata film search + P345 (IMDb ID)
+  try {
+    const srQueries = [
+      ...(cleanDir ? [`"${cleanTitle}" "${cleanDir}"`] : []),
+      ...(targetYear ? [`"${cleanTitle}" film ${targetYear}`] : []),
+      `"${cleanTitle}" film`
+    ];
+    const qIdSet = new Set();
+    for (const srq of srQueries) {
+      const wdSearch = new URL(GUPPY_CONFIG.wikidataApiBase);
+      wdSearch.searchParams.set('action', 'query');
+      wdSearch.searchParams.set('list', 'search');
+      wdSearch.searchParams.set('srsearch', srq);
+      wdSearch.searchParams.set('srlimit', '8');
+      wdSearch.searchParams.set('format', 'json');
+      const sRes = await tauriFetch(wdSearch.toString(), { method: 'GET', headers: { Accept: 'application/json' } });
+      const sData = await sRes.json();
+      for (const item of (sData?.query?.search || [])) {
+        if (/^Q\d+$/.test(item.title)) qIdSet.add(item.title);
+      }
+      if (qIdSet.size > 0) break;
+    }
+    const qIds = [...qIdSet];
+    if (qIds.length > 0) {
+      const wdGet = new URL(GUPPY_CONFIG.wikidataApiBase);
+      wdGet.searchParams.set('action', 'wbgetentities');
+      wdGet.searchParams.set('ids', qIds.join('|'));
+      wdGet.searchParams.set('props', 'claims');
+      wdGet.searchParams.set('format', 'json');
+      const gRes = await tauriFetch(wdGet.toString(), { method: 'GET', headers: { Accept: 'application/json' } });
+      const gData = await gRes.json();
+      for (const qId of qIds) {
+        const ttVal = gData?.entities?.[qId]?.claims?.P345?.at(0)?.mainsnak?.datavalue?.value;
+        if (ttVal && /^tt\d{6,9}$/i.test(ttVal)) return ttVal.toLowerCase();
+      }
+    }
+  } catch {}
+
+  // 3. Fallback to IMDb title search HTML (/find/?q=...&s=tt) for rare/short films like Cannon Fodder (1971)
+  try {
+    const qTerms = [cleanTitle, targetYear || cleanDir].filter(Boolean).join(' ');
+    const findUrl = `${GUPPY_CONFIG.imdbFindBase}/?q=${encodeURIComponent(qTerms)}&s=tt`;
+    const fRes = await tauriFetch(findUrl, {
+      method: 'GET',
+      headers: { Accept: 'text/html', 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)' }
+    });
+    const html = await fRes.text();
+    const ttHit = html.match(/\/title\/(tt\d{6,9})\//i);
+    if (ttHit) return ttHit.at(1).toLowerCase();
+  } catch {}
+
+  return '';
+}
+
 const enrichedMovieCache = new Map();
 export async function fetchEnrichedMovie(movie) {
-  if (movie?.id && enrichedMovieCache.has(movie.id)) return enrichedMovieCache.get(movie.id);
+  if (movie?.id && enrichedMovieCache.has(movie.id) && enrichedMovieCache.get(movie.id)?.imdb_id) return enrichedMovieCache.get(movie.id);
   const host = ["api", "themoviedb", "org"].join(".");
   const path = ["3", "movie", movie.id].join("/");
   const url = new URL(`https://${host}/${path}`);
@@ -455,7 +551,7 @@ export async function fetchEnrichedMovie(movie) {
     title: movie.title,
     year: movie.release_date ? movie.release_date.slice(0, 4) : '',
     poster_url: movie.poster_path ? posterBase + movie.poster_path : '',
-    imdb_id: details.imdb_id || '',
+    imdb_id: details.imdb_id || (await lookupImdbTtFallback(movie.title, movie.release_date?.slice(0, 4), directorObj ? directorObj.name : '')), 
     director: directorObj ? directorObj.name : '',
     cast_list: topCast,
     overview: details.overview || '',
@@ -491,13 +587,52 @@ export async function searchTmdb(title, year = '', director = '', limit = 8) {
     return data.results || [];
   };
 
+  // When searching by Director + Year without a Title, look up the director via /3/search/person and pull their directed credits
+  const fetchDirectorCandidates = async () => {
+    if (!qDir) return [];
+    const searchPerson = async (nameQuery) => {
+      const pUrl = new URL(`https://${host}/3/search/person`);
+      pUrl.searchParams.set("api_key", TMDB_API_KEY);
+      pUrl.searchParams.set("query", nameQuery);
+      pUrl.searchParams.set("include_adult", "true");
+      const pRes = await tauriFetch(pUrl.toString(), { method: 'GET', headers: { 'Accept': 'application/json' } });
+      const pData = await pRes.json();
+      return pData.results || [];
+    };
+
+    let people = await searchPerson(qDir);
+    if (people.length === 0 && qDir.includes(' ')) {
+      const lastName = qDir.split(/\s+/).filter(Boolean).pop();
+      if (lastName && lastName.length >= 2) people = await searchPerson(lastName);
+    }
+
+    const sortedPeople = [...people].sort((a, b) => {
+      const aDir = a.known_for_department === 'Directing' ? 0 : 1;
+      const bDir = b.known_for_department === 'Directing' ? 0 : 1;
+      if (aDir !== bDir) return aDir - bDir;
+      return (b.popularity || 0) - (a.popularity || 0);
+    }).slice(0, 3);
+
+    const creditLists = await Promise.all(
+      sortedPeople.map(async (p) => {
+        const cUrl = new URL(`https://${host}/3/person/${p.id}/movie_credits`);
+        cUrl.searchParams.set("api_key", TMDB_API_KEY);
+        const cRes = await tauriFetch(cUrl.toString(), { method: 'GET', headers: { 'Accept': 'application/json' } });
+        const cData = await cRes.json();
+        return (cData.crew || []).filter(c => c.job === 'Director');
+      })
+    );
+    return creditLists.flat();
+  };
+
   // Always search by title broadly so ±1 year release discrepancies (like 1986 vs 1987) are never dropped
-  const [broadResults, exactYearResults] = await Promise.all([
+  const [broadResults, exactYearResults, directorOnlyResults] = await Promise.all([
     qTitle ? fetchCandidates(false) : Promise.resolve([]),
-    qYear ? fetchCandidates(true) : Promise.resolve([])
+    (qTitle && qYear) ? fetchCandidates(true) : Promise.resolve([]),
+    (!qTitle && qDir) ? fetchDirectorCandidates() : Promise.resolve([])
   ]);
 
-  let rawCombined = [...exactYearResults, ...broadResults];
+  let rawCombined = [...exactYearResults, ...broadResults, ...directorOnlyResults];
   if (rawCombined.length === 0 && qTitle.length >= 5) {
     const trimmedTitle = qTitle.slice(0, -1);
     const retryUrl = new URL(`https://${host}/3/search/movie`);
@@ -717,13 +852,13 @@ export async function saveWantedMovie(movie) {
 export async function updateExistingMovie(oldFolderName, existing, movie, onDisk) {
   const db = await initDb();
 
-  let enriched = movie;
+  let enriched = { ...movie };
   const tmdbId = Number(movie.tmdb_id || movie.id) || 0;
-  if (tmdbId && (!movie.imdb_id || !movie.cast_list || !movie.director)) {
+  if (tmdbId) {
     try {
       const full = await fetchEnrichedMovie({ ...movie, id: tmdbId });
       enriched = {
-        ...movie,
+        ...enriched,
         imdb_id: movie.imdb_id || full.imdb_id || '',
         director: movie.director || full.director || '',
         cast_list: movie.cast_list || full.cast_list || '',
@@ -731,6 +866,10 @@ export async function updateExistingMovie(oldFolderName, existing, movie, onDisk
         poster_url: movie.poster_url || full.poster_url || ''
       };
     } catch (_) {}
+  }
+  if (!enriched.imdb_id && (enriched.title || existing?.title)) {
+    const fallbackTt = await lookupImdbTtFallback(enriched.title || existing.title, enriched.year || existing?.year, enriched.director || existing?.director);
+    if (fallbackTt) enriched.imdb_id = fallbackTt;
   }
 
   const year = enriched.year || existing?.year || '';
@@ -749,9 +888,10 @@ export async function updateExistingMovie(oldFolderName, existing, movie, onDisk
       await rename(actualOldPath, targetNewPath);
     }
   }
+  const finalImdb = enriched.imdb_id || existing?.imdb_id || '';
   await db.execute(
     `UPDATE wishlist_videos SET folder_name=?, title=?, year=COALESCE(NULLIF(?,''),year), imdb_id=?, poster_url=?, director=?, cast_list=?, overview=?, runtime=COALESCE(NULLIF(?,''),runtime), countries=COALESCE(NULLIF(?,''),countries), genres=COALESCE(NULLIF(?,''),genres), tmdb_id=COALESCE(NULLIF(?,0),tmdb_id) WHERE folder_name=?`,
-    [newFolderName, enriched.title, year, enriched.imdb_id || '', enriched.poster_url || '', enriched.director || '', enriched.cast_list || '', enriched.overview || '', enriched.runtime || '', enriched.countries || '', enriched.genres || '', tmdbId, oldFolderName]
+    [newFolderName, enriched.title, year, finalImdb, enriched.poster_url || '', enriched.director || '', enriched.cast_list || '', enriched.overview || '', enriched.runtime || '', enriched.countries || '', enriched.genres || '', tmdbId, oldFolderName]
   );
   const metaLabel = `${enriched.title || oldFolderName}${year ? ` (${year})` : ''}`;
   await logActivity('Updated Metadata', metaLabel, enriched.director || '');
@@ -759,11 +899,13 @@ export async function updateExistingMovie(oldFolderName, existing, movie, onDisk
   if (existing?.status !== 'wanted' && onDisk) {
     await writeJellyfinSidecars(`${newRoot}/${newFolderName}`, {
       ...enriched,
+      imdb_id: finalImdb,
       year,
       tags: existing?.tags || '',
       clips: existing?.clips || ''
     });
   }
+  return { ...existing, ...enriched, folder_name: newFolderName, year, imdb_id: finalImdb };
 }
 
 export async function enrichFilmBatch(list) {
@@ -969,15 +1111,19 @@ export async function fetchPersonFilmography(personName, selectedPersonId = null
 
 
 export async function findTmdbByImdbId(imdbId) {
+  const mTt = String(imdbId || '').match(/\b(tt\d{6,9})\b/i);
+  if (!mTt) return [];
+  const cleanTt = mTt.at(1).toLowerCase();
   const host = ["api", "themoviedb", "org"].join(".");
-  const url = new URL(`https://${host}/3/find/${imdbId.trim()}`);
+  const url = new URL(`https://${host}/3/find/${cleanTt}`);
   url.searchParams.set("api_key", TMDB_API_KEY);
   url.searchParams.set("external_source", "imdb_id");
 
   const res = await tauriFetch(url.toString(), { method: 'GET', headers: { 'Accept': 'application/json' } });
   const data = await res.json();
-  const hits = data.movie_results || [];
-  return await Promise.all(hits.slice(0, 3).map(m => fetchEnrichedMovie(m)));
+  const movieHits = await Promise.all((data.movie_results || []).slice(0, 3).map(m => fetchEnrichedMovie(m)));
+  const tvHits = await Promise.all((data.tv_results || []).slice(0, 3).map(t => fetchEnrichedTvShow(t)));
+  return [...movieHits, ...tvHits].map(hit => ({ ...hit, imdb_id: hit.imdb_id || cleanTt }));
 }
 
 export function parseBulkLines(rawText) {
@@ -1488,10 +1634,13 @@ export async function getMovieFolderFiles(folderName, root = THE_MOVIES_ROOT) {
 
 export async function removeMovieFromLibrary(folderName, isOnDisk = false) {
   const db = await initDb();
-  const rows = await db.select("SELECT media_type, tags FROM wishlist_videos WHERE folder_name = ?", [folderName]);
-  const sourcePath = (await exists(`${rootDir}/${folderName}`).catch(() => false))
-    ? `${rootDir}/${folderName}`
-    : `${MEDIA_ROOT}/${folderName}`;
+  const rows = await db.select("SELECT title, year, media_type, season_number, tags FROM wishlist_videos WHERE folder_name = ?", [folderName]);
+  const rootDir = getMediaRoot(rows.at(0) || {});
+  const candidatePaths = [rootDir, THE_MOVIES_ROOT, TV_ROOT, MEDIA_ROOT].map(r => `${r}/${folderName}`);
+  let sourcePath = `${rootDir}/${folderName}`;
+  for (const p of candidatePaths) {
+    if (await exists(p).catch(() => false)) { sourcePath = p; break; }
+  }
 
   if (isOnDisk && folderName && await exists(sourcePath).catch(() => false)) {
     try {
@@ -1509,7 +1658,12 @@ export async function removeMovieFromLibrary(folderName, isOnDisk = false) {
     await rename(sourcePath, destPath);
   }
   await db.execute("DELETE FROM wishlist_videos WHERE folder_name = ?", [folderName]);
-  await logActivity('Removed', folderName, '');
+  const info = rows.at(0);
+  const cleanLabel = info?.title
+    ? (info.media_type === 'tv' && info.season_number ? `${info.title} · Season ${info.season_number}` : info.title)
+    : folderName;
+  const yearNote = info?.year ? String(info.year) : '';
+  await logActivity('Removed', cleanLabel, yearNote);
 }
 
 export async function updateMovieWatchStatus(folderName, watchStatus) {
@@ -1529,66 +1683,75 @@ export async function updateMovieWatchStatus(folderName, watchStatus) {
 }
 
 export async function searchUniversal(query) {
-  console.log('[Guppy Search] 1. Start query:', query);
-  const q = (query || '').trim();
-  if (!q) return { queryName: '', people: [], movies: [], tvShows: [] };
-
-  const host = ["api", "themoviedb", "org"].join(".");
+  const rawQ = (query || '').trim();
+  if (!rawQ) return { queryName: '', people: [], movies: [], tvShows: [] };
+  const host = 'api.themoviedb.org';
   const imgBase = ["https:/", "image.tmdb.org", "t", "p", "w300"].join("/");
-
-  const fetchJson = async (label, url) => {
-    try {
-      console.log(`[Guppy Search] fetching ${label}:`, url.toString());
-      const res = await tauriFetch(url.toString(), {
-        method: 'GET',
-        headers: { 'Accept': 'application/json' }
-      });
-      const json = await res.json();
-      console.log(`[Guppy Search] ${label} done, count:`, json.results?.length ?? 'ok');
-      return json;
-    } catch (err) {
-      console.error(`[Guppy Search] ${label} FAILED:`, err);
-      return { results: [] };
-    }
+  const fetchJson = async (a, b) => {
+    const u = b || a;
+    try { const r = await tauriFetch(u.toString(), { method: 'GET', headers: { Accept: 'application/json' } }); return await r.json(); }
+    catch { return { results: [] }; }
   };
-
-  const personUrl = new URL(`https://${host}/3/search/person`);
-  personUrl.searchParams.set("api_key", TMDB_API_KEY);
-  personUrl.searchParams.set("query", q);
-  personUrl.searchParams.set("include_adult", "true");
-
-  const movieUrl = new URL(`https://${host}/3/search/movie`);
-  movieUrl.searchParams.set("api_key", TMDB_API_KEY);
-  movieUrl.searchParams.set("query", q);
-  movieUrl.searchParams.set("include_adult", "true");
-
-  const tvUrl = new URL(`https://${host}/3/search/tv`);
-  tvUrl.searchParams.set("api_key", TMDB_API_KEY);
-  tvUrl.searchParams.set("query", q);
-  tvUrl.searchParams.set("include_adult", "true");
-
-  const [pData, mData, tData] = await Promise.all([
-    fetchJson('person-search', personUrl),
-    fetchJson('movie-search', movieUrl),
-    fetchJson('tv-search', tvUrl)
-  ]);
-
-  if ((mData.results || []).length === 0 && (tData.results || []).length === 0 && q.length >= 5) {
-    const trimmedQ = q.slice(0, -1);
-    const retryMovieUrl = new URL(`https://${host}/3/search/movie`);
-    retryMovieUrl.searchParams.set("api_key", TMDB_API_KEY);
-    retryMovieUrl.searchParams.set("query", trimmedQ);
-    retryMovieUrl.searchParams.set("include_adult", "true");
-    const retryTvUrl = new URL(`https://${host}/3/search/tv`);
-    retryTvUrl.searchParams.set("api_key", TMDB_API_KEY);
-    retryTvUrl.searchParams.set("query", trimmedQ);
-    retryTvUrl.searchParams.set("include_adult", "true");
-    const [rm, rt] = await Promise.all([
-      fetchJson('movie-search-fuzzy', retryMovieUrl),
-      fetchJson('tv-search-fuzzy', retryTvUrl)
+  let work = rawQ;
+  const kws = [];
+  work = work.replace(/\[([^\]]+)\]/g, (_, s) => { s.split(',').map(x => x.trim()).filter(Boolean).forEach(x => kws.push(x)); return ' '; });
+  const hasAdult = kws.some(k => k.toLowerCase() === 'adult');
+  const terms = kws.filter(k => k.toLowerCase() !== 'adult');
+  const adultFlag = hasAdult ? 'true' : 'false';
+  let y1 = null, y2 = null;
+  work = work.replace(/\(\s*((?:19|20)\d{2})(?:\s*[-–]\s*((?:19|20)\d{2}))?\s*\)/g, (_, a, b) => { y1 = +a; y2 = b ? +b : +a; return ' '; });
+  if (y1 === null) work = work.replace(/\b((?:19|20)\d{2})\s*[-–]\s*((?:19|20)\d{2})\b/g, (_, a, b) => { y1 = +a; y2 = +b; return ' '; });
+  const q = work.replace(/\s+/g, ' ').trim();
+  const kwIds = (await Promise.all(terms.map(async kw => {
+    const u = new URL(`https://${host}/3/search/keyword`);
+    u.searchParams.set('api_key', TMDB_API_KEY); u.searchParams.set('query', kw);
+    const d = await fetchJson(u);
+    return (d.results || []).find(r => r.name?.toLowerCase() === kw.toLowerCase())?.id || d.results?.at(0)?.id || null;
+  }))).filter(Boolean);
+  let pData = { results: [] }, mData = { results: [] }, tData = { results: [] };
+  if (q) {
+    const mk = (p) => { const u = new URL(`https://${host}/3/search/${p}`); u.searchParams.set('api_key', TMDB_API_KEY); u.searchParams.set('query', q); u.searchParams.set('include_adult', adultFlag); return u; };
+    const mu = mk('movie'), tu = mk('tv');
+    if (y1 !== null && y1 === y2) { mu.searchParams.set('primary_release_year', String(y1)); tu.searchParams.set('first_air_date_year', String(y1)); }
+    [pData, mData, tData] = await Promise.all([fetchJson(mk('person')), fetchJson(mu), fetchJson(tu)]);
+    if (y1 !== null && y2 !== null) {
+      const lo = Math.min(y1, y2), hi = Math.max(y1, y2);
+      mData.results = (mData.results || []).filter(m => { const y = +(m.release_date || '').slice(0, 4); return y >= lo && y <= hi; });
+      tData.results = (tData.results || []).filter(t => { const y = +(t.first_air_date || '').slice(0, 4); return y >= lo && y <= hi; });
+    }
+  } else if (y1 !== null || kwIds.length > 0 || hasAdult) {
+    const mkD = (p, f) => {
+      const u = new URL(`https://${host}/3/discover/${p}`);
+      u.searchParams.set('api_key', TMDB_API_KEY); u.searchParams.set('include_adult', adultFlag); u.searchParams.set('sort_by', 'popularity.desc');
+      if (y1 !== null && y2 !== null) { u.searchParams.set(`${f}.gte`, `${Math.min(y1, y2)}-01-01`); u.searchParams.set(`${f}.lte`, `${Math.max(y1, y2)}-12-31`); }
+      if (kwIds.length) u.searchParams.set('with_keywords', kwIds.join(','));
+      return u;
+    };
+    [mData, tData] = await Promise.all([fetchJson(mkD('movie', 'primary_release_date')), fetchJson(mkD('tv', 'first_air_date'))]);
+  }
+  if (q && kwIds.length > 0) {
+    const hasKw = async (kind, id) => {
+      const ku = new URL(`https://${host}/3/${kind}/${id}/keywords`);
+      ku.searchParams.set('api_key', TMDB_API_KEY);
+      const kd = await fetchJson(ku);
+      const list = kd.keywords || kd.results || [];
+      return kwIds.every(targetId => list.some(k => Number(k.id) === Number(targetId)));
+    };
+    const [mFlags, tFlags] = await Promise.all([
+      Promise.all((mData.results || []).slice(0, 20).map(m => hasKw('movie', m.id))),
+      Promise.all((tData.results || []).slice(0, 12).map(t => hasKw('tv', t.id)))
     ]);
-    mData.results = rm.results || [];
-    tData.results = rt.results || [];
+    mData.results = (mData.results || []).slice(0, 20).filter((_, idx) => mFlags[idx]);
+    tData.results = (tData.results || []).slice(0, 12).filter((_, idx) => tFlags[idx]);
+  }
+  if (!hasAdult) {
+    pData.results = (pData.results || []).filter(p => !p.adult);
+    mData.results = (mData.results || []).filter(m => !m.adult);
+    tData.results = (tData.results || []).filter(t => !t.adult);
+  } else {
+    pData.results = (pData.results || []).filter(p => Boolean(p.adult));
+    mData.results = (mData.results || []).filter(m => Boolean(m.adult));
+    tData.results = (tData.results || []).filter(t => Boolean(t.adult));
   }
   console.log('[Guppy Search] 2. Initial 3 searches finished');
 
@@ -1895,7 +2058,7 @@ export async function saveTvSeasonToLibrary(item, entry) {
 
   await mkdir(destFolder, { recursive: true });
 
-  const videoExts = new Set(['mp4', 'mkv', 'avi', 'mov', 'm4v', 'wmv', 'ts', 'webm']);
+  const videoExts = new Set(['mp4', 'mkv', 'avi', 'mov', 'm4v', 'wmv', 'ts', 'webm', 'mpg', 'mpeg']);
   const incomingEpisodes = Array.isArray(entry.episodes) ? entry.episodes.map(e => ({ ...e })) : [];
   const epMap = new Map(incomingEpisodes.map(e => [Number(e.episode_number), e]));
   const movedEpNums = new Set();
@@ -2335,7 +2498,7 @@ export function computeSeasonWatchStatus(episodes = []) {
 export async function reconcileTvEpisodesOnDisk() {
   const db = await initDb();
   const tvRows = await db.select(`SELECT * FROM wishlist_videos WHERE media_type = 'tv'`);
-  const videoExts = new Set(['mp4', 'mkv', 'avi', 'mov', 'm4v', 'wmv', 'ts', 'webm']);
+  const videoExts = new Set(['mp4', 'mkv', 'avi', 'mov', 'm4v', 'wmv', 'ts', 'webm', 'mpg', 'mpeg']);
 
   for (const row of tvRows) {
     if (!row.folder_name) continue;
@@ -2399,7 +2562,7 @@ export async function exportCatalogToJson() {
   const db = await initDb();
   const rows = await db.select(`SELECT * FROM wishlist_videos ORDER BY title ASC, year ASC, season_number ASC`);
 
-  const VIDEO_EXTS = new Set(['mp4', 'mkv', 'avi', 'mov', 'm4v', 'wmv', 'ts', 'webm']);
+  const VIDEO_EXTS = new Set(['mp4', 'mkv', 'avi', 'mov', 'm4v', 'wmv', 'ts', 'webm', 'mpg', 'mpeg']);
   const exportedItems = [];
 
   for (const row of rows) {

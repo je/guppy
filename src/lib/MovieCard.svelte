@@ -1,6 +1,7 @@
 <script>
   import { readDir } from '@tauri-apps/plugin-fs';
   import { revealItemInDir } from '@tauri-apps/plugin-opener';
+  import Icon from '$lib/Icon.svelte';
   import { computeSeasonWatchStatus } from '$lib/guppyStore.js';
 
   export let item;
@@ -136,6 +137,27 @@
     : (data?.watch_status || '');
 
   let seasonPickerOpen = false;
+  let lookupQuery = '';
+  let lastSyncedLookupKey = '';
+  $: if (data && (item?.key || '') !== lastSyncedLookupKey) {
+    lastSyncedLookupKey = item?.key || '';
+    const t = data.title || '';
+    const y = data.year ? ` (${data.year})` : '';
+    const d = data.director ? ` [${data.director}]` : '';
+    lookupQuery = `${t}${y}${d}`.trim();
+  }
+  function applyLookupQuery() {
+    if (!data) return;
+    let w = (lookupQuery || '').trim();
+    let dir = '';
+    w = w.replace(/\[([^\]]+)\]/g, (_, d) => { dir = d.trim(); return ' '; });
+    let yr = '';
+    w = w.replace(/\(\s*((?:19|20)\d{2})(?:\s*[-–]\s*(?:19|20)\d{2})?\s*\)/g, (_, y1) => { yr = y1; return ' '; });
+    data.title = w.replace(/\s+/g, ' ').trim();
+    data.year = yr;
+    data.director = dir;
+    onLookup?.();
+  }
 
   function handleTopWatchClick(status) {
     if (!isTv) {
@@ -186,6 +208,15 @@
         </div>
 
         <div class="icon-actions">
+          {#if data}
+            <input
+              type="text"
+              placeholder="Quality"
+              bind:value={data.quality}
+              title="File quality (e.g. 1080p, 720p, DVD)"
+              style="width: 72px; height: 26px; padding: 0 6px; font-size: 0.78rem; background: #fff; border: 1px solid #b8b4a6; box-sizing: border-box;"
+            />
+          {/if}
           {#if item?.sourcePath}
             <button
               type="button"
@@ -286,14 +317,43 @@
 
       </div>
 
-      {#if data}
-        <div class="tag-editor" style="margin: 6px 0;">
-          <div class="tag-row">
-            <input type="text" placeholder="Tags before import (e.g. adult, noir, 4k)…" bind:value={data.tags} />
-            <input type="text" placeholder="Clips / scenes (optional)…" bind:value={data.clips} />
-          </div>
+      <div class="controls" style="display: flex; align-items: center; gap: 6px; width: 100%; box-sizing: border-box;">
+        <div style="display: flex; align-items: stretch; flex: 1; min-width: 0;">
+          <button
+            type="button"
+            class="btn-secondary"
+            style="display: inline-flex; align-items: center; justify-content: center; width: 32px; padding: 0; border-right: none; flex-shrink: 0;"
+            on:click={() => {
+              data.media_type = data.media_type === 'tv' ? 'movie' : 'tv';
+              if (data.media_type === 'tv' && !data.season_number) data.season_number = 1;
+            }}
+            title={data.media_type === 'tv' ? 'TV Season (click to switch to Movie)' : 'Movie (click to switch to TV Season)'}
+            aria-label={data.media_type === 'tv' ? 'TV Season' : 'Movie'}
+          >
+            <Icon name={data.media_type === 'tv' ? 'tv' : 'movie'} size={14} />
+          </button>
+          <input
+            type="text"
+            style="flex: 1; min-width: 160px; width: 100%;"
+            placeholder="title (year) [director]"
+            bind:value={lookupQuery}
+            on:keydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); applyLookupQuery(); } }}
+          />
         </div>
-      {/if}
+
+        {#if data.media_type === 'tv'}
+          <input class="g-st-43ae34"
+            type="number"
+            min="1"
+            placeholder="Season"
+            bind:value={data.season_number}
+            title="Season number"
+          />
+        {/if}
+
+        <button type="button" class="btn-secondary" on:click={applyLookupQuery}>{loading ? 'Searching…' : 'Lookup'}</button>
+        <button type="button" class="btn-secondary" on:click={onWikiLookup} title="Search Wikipedia">Wiki</button>
+      </div>
 
       {#if data?.director || data?.cast_list}
         <div class="credits">
@@ -319,38 +379,12 @@
         <p class="synopsis">{data.overview}</p>
       {/if}
 
-      <div class="controls">
-        <button
-          type="button"
-          class="btn-secondary"
-          on:click={() => {
-            data.media_type = data.media_type === 'tv' ? 'movie' : 'tv';
-            if (data.media_type === 'tv' && !data.season_number) data.season_number = 1;
-          }}
-          title="Toggle Movie vs. TV Season"
-        >
-          {data.media_type === 'tv' ? 'TV' : 'Movie'}
-        </button>
-
-        <input type="text" placeholder={data.media_type === 'tv' ? 'Show Title' : 'Title'} bind:value={data.title} />
-
-        {#if data.media_type === 'tv'}
-          <input class="g-st-43ae34"
-            type="number"
-            min="1"
-            placeholder="Season"
-           
-            bind:value={data.season_number}
-            title="Season number"
-          />
-        {/if}
-
-        <input class="g-st-2dd1f7" type="number" placeholder="Year" bind:value={data.year} />
-        <input class="g-st-90f955" type="text" placeholder="Director" bind:value={data.director} />
-        <input class="g-st-7e5dde" type="text" placeholder="Quality" bind:value={data.quality} />
-        <button class="btn-secondary" on:click={onLookup}>{loading ? 'Searching…' : 'Lookup'}</button>
-        <button class="btn-secondary" on:click={onWikiLookup} title="Search Wikipedia">Wiki</button>
-      </div>
+      {#if data}
+        <div class="tag-row" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%; margin: 6px 0 0 0; box-sizing: border-box;">
+          <input type="text" style="width: 100%; box-sizing: border-box;" placeholder="Tags before import (e.g. adult, noir, 4k)…" bind:value={data.tags} />
+          <input type="text" style="width: 100%; box-sizing: border-box;" placeholder="Clips / scenes (optional)…" bind:value={data.clips} />
+        </div>
+      {/if}
 
       {#if error}
         <div class="card-error">{error}</div>

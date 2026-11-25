@@ -8,7 +8,7 @@
   import PersonView from '$lib/PersonView.svelte';
   import MovieDetailView from '$lib/MovieDetailView.svelte';
   import SearchResultsView from '$lib/SearchResultsView.svelte';
-  import { GUPPY_CONFIG, MEDIA_ROOT, TV_ROOT, THE_MOVIES_ROOT, VIDEO_EXTS, readDir, writeTextFile, initDb, inferMetadata, inferFolder, searchTmdb, searchWikipediaMovie, fetchPersonFilmography, saveToLibrary, saveWantedMovie, updateExistingMovie, updateMovieTagsAndClips, syncAllJellyfinSidecars, removeMovieFromLibrary, updateMovieWatchStatus, searchUniversal, searchTmdbTv, fetchTvSeasonDetails, saveTvSeasonToLibrary, saveWantedTvSeason, updateSeasonEpisodes, computeSeasonWatchStatus, parseLooseTvFilename, exportCatalogToJson, reconcileTvEpisodesOnDisk, backfillMissingTvMetadata, backfillMissingMovieMetadata, fetchEnrichedTvShow, logActivity, writeJellyfinTvSidecars, isRemoteClient, getConnectionStatus, mountSharedDrive,migrateNonAdultMovies  } from '$lib/guppyStore.js';
+  import { GUPPY_CONFIG, MEDIA_ROOT, TV_ROOT, THE_MOVIES_ROOT, VIDEO_EXTS, readDir, writeTextFile, initDb, inferMetadata, inferFolder, searchTmdb, findTmdbByImdbId, searchWikipediaMovie, fetchPersonFilmography, saveToLibrary, saveWantedMovie, updateExistingMovie, updateMovieTagsAndClips, syncAllJellyfinSidecars, removeMovieFromLibrary, updateMovieWatchStatus, searchUniversal, searchTmdbTv, fetchTvSeasonDetails, saveTvSeasonToLibrary, saveWantedTvSeason, updateSeasonEpisodes, computeSeasonWatchStatus, parseLooseTvFilename, exportCatalogToJson, reconcileTvEpisodesOnDisk, backfillMissingTvMetadata, backfillMissingMovieMetadata, fetchEnrichedTvShow, logActivity, writeJellyfinTvSidecars, isRemoteClient, getConnectionStatus, mountSharedDrive,migrateNonAdultMovies  } from '$lib/guppyStore.js';
 
   let viewMode = 'collection';
   let prevViewMode = 'collection';
@@ -33,8 +33,28 @@
   let activePersonData = null;
   let loadingPerson = false;
   let statusMsg = '';
+  let statusTimer = null;
+  let stagedBanner = '';
+  let stagedBannerTimer = null;
+  function flashStagedBanner(msg) {
+    stagedBanner = msg;
+    if (stagedBannerTimer) clearTimeout(stagedBannerTimer);
+    stagedBannerTimer = setTimeout(() => {
+      if (stagedBanner === msg) stagedBanner = '';
+    }, 4000);
+  }
+  function flashStatus(msg) {
+    statusMsg = msg;
+    if (statusTimer) clearTimeout(statusTimer);
+    statusTimer = setTimeout(() => {
+      if (statusMsg === msg) statusMsg = '';
+    }, 4000);
+  }
   let personQuery = '';
   let showBulkForm = false;
+  let auditResetNonce = 0;
+  let openMetafilesNonce = 0;
+  let activeAuditHealthFilter = '';
   let showAdultOnly = false;
   let isRemote = true;
   let adultHoldRaf = null;
@@ -157,8 +177,7 @@
         if (!entry.isDirectory && !isVideo) continue;
 
         if (!entry.isDirectory) {
-          const isGenericDropFolder = /^(to[-_\s]?import|import|incoming|downloads?|staging|temp|new|movies?|films?|desktop)$/i.test(String(selectedFolderName || '').trim());
-          const parsedTv = parseLooseTvFilename(entry.name, isGenericDropFolder ? '' : selectedFolderName);
+          const parsedTv = parseLooseTvFilename(entry.name, '');
           if (parsedTv) {
             if (!looseTvGroups.has(parsedTv.normKey)) {
               looseTvGroups.set(parsedTv.normKey, {
@@ -231,6 +250,8 @@
 
       items.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
       inputs = nextInputs;
+      showBulkForm = false;
+      auditResetNonce += 1;
       importQueue = items;
       viewMode = 'split';
 
@@ -256,6 +277,21 @@
     loadingLookup = { ...loadingLookup, [key]: true };
     statusMsg = '';
     try {
+      const ttMatch = String(title || '').match(/\b(tt\d{6,9})\b/i);
+      if (ttMatch) {
+        const cleanTt = ttMatch.at(1).toLowerCase();
+        const found = await findTmdbByImdbId(cleanTt);
+        if (found.length > 0) {
+          searchResults = { ...searchResults, [key]: found };
+        } else if (dbItem) {
+          await handleUpdate(dbItem.folder_name, { ...dbItem, imdb_id: cleanTt });
+          flashStatus(`Attached IMDb ID ${cleanTt}`);
+        } else if (cur) {
+          inputs = { ...inputs, [key]: { ...cur, imdb_id: cleanTt } };
+          flashStatus(`Attached IMDb ID ${cleanTt}`);
+        }
+        return;
+      }
       const res = isTv
         ? await searchTmdbTv(title, year)
         : await searchTmdb(title, year, director, limit);
@@ -347,8 +383,13 @@
       const nextErrors = { ...saveErrors };
       delete nextErrors[item.key];
       saveErrors = nextErrors;
+      const watchLabels = { liked: 'Seen & Liked', unfinished: 'Unfinished', disliked: 'Seen & Disliked' };
+      const wLabel = watchLabels[entry.watch_status] || 'Unseen';
+      const doneMsg = `Imported "${entry.title || item.name}" (${wLabel})`;
       importQueue = importQueue.filter(q => q.key !== item.key);
       await runAudit();
+      flashStatus(doneMsg);
+      flashStagedBanner(doneMsg);
     } catch (err) {
       saveErrors = { ...saveErrors, [item.key]: String(err?.message || err) };
     }
@@ -447,8 +488,10 @@
         return;
       }
 
-      await updateExistingMovie(oldFolder, existing, movie, diskFolders.includes(oldFolder));
-      await logActivity('Updated Metadata', movie.title, movie.imdb_id || '');
+      const updatedEntry = await updateExistingMovie(oldFolder, existing, movie, diskFolders.includes(oldFolder));
+      const resolvedTt = updatedEntry?.imdb_id || movie.imdb_id || '';
+      await logActivity('Updated Metadata', movie.title, resolvedTt);
+      flashStatus(`Updated "${movie.title}"${resolvedTt ? ` (${resolvedTt})` : ''}`);
       const next = { ...searchResults };
       Reflect.deleteProperty(next, `db:${oldFolder}`);
       Reflect.deleteProperty(next, oldFolder);
@@ -460,8 +503,10 @@
   async function handleDelete(folderName) {
     try {
       const isOnDisk = diskFolders.includes(folderName);
+      const targetItem = databaseEntries.find(e => e.folder_name === folderName);
       await removeMovieFromLibrary(folderName, isOnDisk);
       await runAudit();
+      flashStatus(`Removed "${targetItem?.title || folderName}"`);
     } catch (err) {
       statusMsg = `Remove failed: ${err}`;
     }
@@ -587,7 +632,7 @@
     try {
       const dateStamp = new Date().toISOString().slice(0, 10);
       const filePath = await save({
-        defaultPath: `${GUPPY_CONFIG.hostJellyRoot}/guppy-catalog-${dateStamp}.json`,
+        defaultPath: `${String(GUPPY_CONFIG.hostJellyRoot || '').replace(/\/+$/, '').replace(/\/[^/]+$/, '') || GUPPY_CONFIG.hostJellyRoot}/guppy-catalog-${dateStamp}.json`,
         filters: [{ name: 'JSON', extensions: ['json'] }]
       });
       if (!filePath) return;
@@ -714,26 +759,49 @@
 </script>
 
 <main class="container">
-  <div class="conn-bar g-st-6a0b66">
-    <span>
-      <strong>{connStatus.mode === 'remote' ? (typeof window !== 'undefined' && !window.__TAURI_INTERNALS__ ? 'Client Browser' : 'Client Mac') : connStatus.mode === 'host' ? 'Host Mac' : 'Checking…'}</strong>
+  <div class="conn-bar g-st-6a0b66" style="display: flex; align-items: center; gap: 8px; padding: 4px 0; margin-bottom: 0; width: 100%;">
+      {#if viewMode === 'collection' && !isRemote}
+        <button
+          type="button"
+          class="icon-btn"
+          on:click={() => { viewHistory = []; activeMovie = null; activePersonData = null; viewMode = 'split'; }}
+          title="Switch to Audit & Import"
+          aria-label="Switch to Audit and Import"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="m9 14 2 2 4-4"/></svg>
+        </button>
+      {:else}
+        <button
+          type="button"
+          class="icon-btn"
+          on:click={() => { viewHistory = []; activeMovie = null; activePersonData = null; viewMode = 'collection'; }}
+          title="Return to Catalog"
+          aria-label="Return to Catalog"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M3 7.5h4"/><path d="M3 12h18"/><path d="M3 16.5h4"/><path d="M17 3v18"/><path d="M17 7.5h4"/><path d="M17 16.5h4"/></svg>
+        </button>
+      {/if}
+    <span style="display: inline-flex; align-items: center; gap: 5px;">
       {#if connStatus.mode === 'remote'}
-        · Server ({connStatus.serverUrl}):
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="Client"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
         <strong style="color: {connStatus.serverOk ? '#2b7a3d' : '#9e2a2b'};">
-          {connStatus.serverOk ? 'Connected' : 'Unreachable'}
+          {connStatus.serverOk ? `Connected to ${connStatus.serverUrl}` : `Unreachable (${connStatus.serverUrl})`}
         </strong>
       {:else if connStatus.mode === 'host'}
-        · LAN Server:
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="Host Server"><rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
         <strong style="color: {connStatus.serverOk ? '#2b7a3d' : '#8a8578'};">
           {connStatus.serverOk ? `Sharing on ${connStatus.serverUrl}` : 'Starting…'}
         </strong>
+      {:else}
+        <strong>Checking…</strong>
       {/if}
     </span>
 
-    <span>
-      · Media Drive:
+    <span style="display: inline-flex; align-items: center; gap: 5px;">
+      <span>·</span>
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="Media Drive"><line x1="22" y1="12" x2="2" y2="12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><line x1="6" y1="16" x2="6.01" y2="16"/><line x1="10" y1="16" x2="10.01" y2="16"/></svg>
       <strong style="color: {connStatus.driveMounted ? '#2b7a3d' : '#9e2a2b'};">
-        {connStatus.driveMounted ? 'Mounted' : 'Not Mounted'}
+        {connStatus.driveMounted ? (connStatus.mode === 'remote' ? 'Remote' : 'Local') : 'Not Mounted'}
       </strong>
     </span>
 
@@ -745,15 +813,16 @@
 
     <button
       type="button"
-      class="btn-text g-st-d0e0dd"
-     
+      class="icon-btn"
+      title="Recheck connection & drive status"
+      aria-label="Recheck"
       on:click={async () => { await refreshConnectionStatus(); await runAudit(); }}
     >
-      Recheck
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
     </button>
   </div>
 
-  <header class="app-header">
+  <header class="app-header" style="padding-top: 8px;">
     <div class="header-left">
       <button
         type="button"
@@ -807,25 +876,22 @@
             class="status-filter-link"
             class:active={viewMode === 'collection' && watchFilter === 'all'}
             on:click={() => { watchFilter = 'all'; activeMovie = null; viewMode = 'collection'; }}
-          >{listedCount} Listed</button><span class="sep">,</span>
-          <button
+          >{listedCount} Listed</button><span class="sep" style="margin-left: -4px;">,</span> <button
             type="button"
             class="status-filter-link"
             class:active={viewMode === 'collection' && watchFilter === 'unseen'}
             on:click={() => { watchFilter = 'unseen'; activeMovie = null; viewMode = 'collection'; }}
-          >{unwatchedCount} Unwatched</button><span class="sep">,</span>
-          <button
+          >{unwatchedCount} Unwatched</button><span class="sep" style="margin-left: -4px;">,</span> <button
             type="button"
             class="status-filter-link"
             class:active={viewMode === 'collection' && watchFilter === 'unfinished'}
             on:click={() => { watchFilter = 'unfinished'; activeMovie = null; viewMode = 'collection'; }}
-          >{unfinishedCount} Unfinished</button><span class="sep">,</span>
-          <button
+          >{unfinishedCount} Unfinished</button><span class="sep" style="margin-left: -4px;">,</span> <button
             type="button"
             class="status-filter-link"
             class:active={viewMode === 'collection' && watchFilter === 'liked'}
             on:click={() => { watchFilter = 'liked'; activeMovie = null; viewMode = 'collection'; }}
-          >{likedCount} Liked</button><span class="sep">, and</span>
+          >{likedCount} Liked</button><span class="sep" style="margin-left: -4px;">, and</span>
           <button
             type="button"
             class="status-filter-link"
@@ -835,88 +901,74 @@
         </h2>
 
       {:else if viewMode === 'split' && !isRemote}
-        <button type="button" class="btn-secondary g-st-678404" on:click={() => showBulkForm = !showBulkForm}>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-          <span>Add Titles</span>
+        <button
+          type="button"
+          class="{!showBulkForm && importQueue.length === 0 && !activeAuditHealthFilter ? 'btn-primary' : 'btn-secondary'} g-st-678404"
+          on:click={() => { showBulkForm = false; importQueue = []; activeAuditHealthFilter = ''; auditResetNonce += 1; }}
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/></svg>
+          <span>File Library</span>
         </button>
 
-        <button type="button" class="btn-secondary g-st-678404" on:click={pickImportFolder}>
+        <button
+          type="button"
+          class="{importQueue.length > 0 ? 'btn-primary' : 'btn-secondary'} g-st-678404"
+          on:click={pickImportFolder}
+        >
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
           <span>Import Folder</span>
         </button>
 
-        {#if !confirmRescan}
-          <button type="button" class="btn-secondary g-st-678404" on:click={() => { confirmRescan = true; confirmRewrite = false; }}>
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
-            <span>Rescan Folders</span>
-          </button>
-        {:else}
-          <button
-            type="button"
-            class="btn-primary"
-            on:click={async () => {
-              confirmRescan = false;
-              statusMsg = 'Rescanning library folders…';
-              await runAudit();
-              statusMsg = 'Library folders rescanned.';
-              setTimeout(() => { if (statusMsg === 'Library folders rescanned.') statusMsg = ''; }, 2500);
-            }}
-          >Confirm Rescan?</button>
-          <button type="button" class="btn-secondary" on:click={() => { confirmRescan = false; }}>Cancel</button>
-        {/if}
-
-        {#if syncStatus}
-          <button type="button" class="btn-secondary" disabled>{syncStatus}</button>
-        {:else if !confirmRewrite}
-          <button type="button" class="btn-secondary g-st-678404" disabled={ownedCount === 0} on:click={() => { confirmRewrite = true; confirmRescan = false; }}>
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>
-            <span>Rewrite Metafiles</span>
-          </button>
-        {:else}
-          <button type="button" class="btn-primary" on:click={() => { confirmRewrite = false; handleSyncSidecars(); }}>
-            Confirm Rewrite ({ownedCount} Folders)?
-          </button>
-          <button type="button" class="btn-secondary" on:click={() => { confirmRewrite = false; }}>Cancel</button>
-        {/if}
-
-        <button type="button" class="btn-secondary g-st-678404" on:click={handleExportJson}>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-          <span>Export JSON</span>
+        <button
+          type="button"
+          class="{showBulkForm ? 'btn-primary' : 'btn-secondary'} g-st-678404"
+          on:click={() => { const next = !showBulkForm; showBulkForm = next; if (next) { importQueue = []; activeAuditHealthFilter = ''; auditResetNonce += 1; } }}
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          <span>Add Titles</span>
         </button>
+
+
       {/if}
     </div>
 
     <div class="header-right">
-      {#if viewMode === 'collection' && !isRemote}
-        <button
-          type="button"
-          class="icon-btn"
-          on:click={() => { viewHistory = []; activeMovie = null; activePersonData = null; viewMode = 'split'; }}
-          title="Switch to Audit & Import"
-          aria-label="Switch to Audit and Import"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="m9 14 2 2 4-4"/></svg>
-        </button>
-      {:else}
-        <button
-          type="button"
-          class="icon-btn"
-          on:click={() => { viewHistory = []; activeMovie = null; activePersonData = null; viewMode = 'collection'; }}
-          title="Return to Catalog"
-          aria-label="Return to Catalog"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M3 7.5h4"/><path d="M3 12h18"/><path d="M3 16.5h4"/><path d="M17 3v18"/><path d="M17 7.5h4"/><path d="M17 16.5h4"/></svg>
-        </button>
-      {/if}
 
-      <form class="person-search" on:submit|preventDefault={() => runUniversalSearch(personQuery)}>
-        <input
-          type="text"
-          placeholder="Search title, director, or cast…"
+      <form class="person-search" on:submit|preventDefault={() => { const q = personQuery; personQuery = ''; runUniversalSearch(q); }}>
+        <textarea
+          rows="1"
+          placeholder="name (year-year) [keywords]"
+          aria-label="Universal search"
           bind:value={personQuery}
-          on:click={() => { if (personQuery) personQuery = ''; }}
-        />
-        <button type="submit" class="btn-secondary">Search</button>
+          style="resize: none; overflow: hidden; height: 30px; min-height: 30px !important; line-height: 1.3; padding: 5px 8px;"
+          on:focus={(e) => {
+            e.currentTarget.placeholder = 'name (year-year) [keywords]';
+            e.currentTarget.style.setProperty('height', '30px', 'important');
+            const h = Math.max(30, e.currentTarget.scrollHeight);
+            e.currentTarget.style.setProperty('height', h + 'px', 'important');
+          }}
+          on:blur={(e) => {
+            if (!personQuery) {
+              
+              e.currentTarget.style.setProperty('height', '30px', 'important');
+            }
+          }}
+          on:input={(e) => {
+            e.currentTarget.style.setProperty('height', '30px', 'important');
+            const h = Math.max(30, e.currentTarget.scrollHeight);
+            e.currentTarget.style.setProperty('height', h + 'px', 'important');
+          }}
+          on:keydown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              const q = personQuery;
+              personQuery = '';
+              e.currentTarget.placeholder = '';
+              e.currentTarget.style.setProperty('height', '30px', 'important');
+              runUniversalSearch(q);
+            }
+          }}
+        ></textarea>
       </form>
     </div>
   </header>
@@ -1091,12 +1143,27 @@
       {databaseEntries}
       {diskFolders}
       {importQueue}
+      {stagedBanner}
       bind:inputs
       {searchResults}
       {loadingLookup}
       {saveErrors}
       {showBulkForm}
-      onToggleBulk={() => showBulkForm = !showBulkForm}
+      {auditResetNonce}
+      {openMetafilesNonce}
+      bind:activeHealthFilter={activeAuditHealthFilter}
+      {syncStatus}
+      {ownedCount}
+      onRewriteMetafiles={handleSyncSidecars}
+      onRescanLibrary={async () => {
+        statusMsg = 'Rescanning library folders…';
+        await runAudit();
+        statusMsg = 'Library folders rescanned.';
+        setTimeout(() => { if (statusMsg === 'Library folders rescanned.') statusMsg = ''; }, 2500);
+      }}
+      onExportJson={handleExportJson}
+      onClearSubViews={() => { showBulkForm = false; importQueue = []; }}
+      onToggleBulk={() => { const next = !showBulkForm; showBulkForm = next; if (next) { importQueue = []; auditResetNonce += 1; } }}
       onAudit={async (addedCount = 0) => {
         await runAudit();
         if (addedCount > 0) {

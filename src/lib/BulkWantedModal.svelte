@@ -187,29 +187,62 @@
     running = false;
   }
 
+  function buildRefineQuery(row) {
+    const t = row.title || '';
+    const y = row.year ? ` (${row.year})` : '';
+    const d = row.director ? ` [${row.director}]` : '';
+    return `${t}${y}${d}`.trim();
+  }
+
+  function parseRefineQuery(raw, fallbackRow) {
+    let w = (raw || '').trim();
+    let director = '';
+    w = w.replace(/\[([^\]]+)\]/g, (_, d) => { director = d.trim(); return ' '; });
+    let y1 = null, y2 = null;
+    w = w.replace(/\(\s*((?:19|20)\d{2})(?:\s*[-–]\s*((?:19|20)\d{2}))?\s*\)/g, (_, a, b) => {
+      y1 = Number(a);
+      y2 = b ? Number(b) : Number(a);
+      return ' ';
+    });
+    const title = w.replace(/\s+/g, ' ').trim();
+    return {
+      ...fallbackRow,
+      title,
+      year: y1 !== null && y1 === y2 ? String(y1) : '',
+      yearRange: y1 !== null && y2 !== null ? [Math.min(y1, y2), Math.max(y1, y2)] : null,
+      director
+    };
+  }
+
   async function refineRow(index) {
     const row = rows.at(index);
     if (!row) return;
-    const updatedQuery = {
-      ...row,
-      title: (row.draftTitle ?? row.title).trim(),
-      year: (row.draftYear ?? row.year).trim(),
-      director: (row.draftDirector ?? row.director).trim(),
-      status: 'searching'
-    };
+    const prevSelected = row.selected || null;
+    const parsed = parseRefineQuery(row.draftQuery ?? buildRefineQuery(row), row);
+    const updatedQuery = { ...parsed, status: 'searching' };
     rows[index] = updatedQuery;
     try {
-      const results = await lookupSingleRow(updatedQuery);
-      const topMatch = results.at(0) || null;
-      const existing = findExistingInCatalog(topMatch);
-      const mismatch = isTitleMismatch(updatedQuery, topMatch);
+      let results = await lookupSingleRow(updatedQuery);
+      if (parsed.yearRange) {
+        const [lo, hi] = parsed.yearRange;
+        results = results.filter(m => {
+          const y = Number((m.release_date || '').slice(0, 4) || m.year || 0);
+          return !y || (y >= lo && y <= hi);
+        });
+      }
+      if (prevSelected && !results.some(m => String(m.id) === String(prevSelected.id))) {
+        results = [prevSelected, ...results];
+      }
+      const activeMatch = prevSelected || results.at(0) || null;
+      const existing = findExistingInCatalog(activeMatch);
+      const mismatch = !prevSelected && isTitleMismatch(updatedQuery, activeMatch);
 
       rows[index] = {
         ...updatedQuery,
-        previewMatch: null,
+        previewMatch: activeMatch,
         matches: results,
         existingMatch: existing,
-        selected: (existing || mismatch) ? null : topMatch,
+        selected: prevSelected ? prevSelected : ((existing || mismatch) ? null : activeMatch),
         watch_status: existing?.watch_status || row.watch_status || defaultWatch,
         status: results.length > 0 ? 'matched' : 'none'
       };
@@ -454,19 +487,9 @@ Better Call Saul Season 6 | drama"
                 </button>
                 <input
                   type="text"
-                  placeholder="Title or tt1234567"
-                  bind:value={rows[i].draftTitle}
-                />
-                <input class="g-st-d4da31"
-                  type="text"
-                  placeholder="Year"
-                 
-                  bind:value={rows[i].draftYear}
-                />
-                <input
-                  type="text"
-                  placeholder="Director"
-                  bind:value={rows[i].draftDirector}
+                  style="flex: 1; min-width: 220px;"
+                  placeholder="title (year-year) [director] or tt1234567"
+                  bind:value={rows[i].draftQuery}
                 />
                 <button type="submit" class="btn-primary" disabled={row.status === 'searching'}>
                   {row.status === 'searching' ? '…' : 'Search'}
@@ -499,30 +522,51 @@ Better Call Saul Season 6 | drama"
             {#if row.status === 'searching'}
               <span class="muted">Searching TMDb…</span>
             {:else if row.matches.length > 0}
-              <select
-                value={ex ? '' : (row.selected?.id || '')}
-                on:change={(e) => {
-                  const chosen = row.matches.find(m => String(m.id) === e.target.value) || null;
-                  const existing = findExistingInCatalog(chosen);
-                  rows[i] = {
-                    ...row,
-                    previewMatch: chosen,
-                    existingMatch: existing,
-                    selected: existing ? null : chosen,
-                    title: chosen ? chosen.title : row.title,
-                    year: chosen ? (chosen.release_date?.slice(0, 4) || String(chosen.year || '') || row.year) : row.year
-                  };
-                }}
-              >
-                <option value="">
-                  {ex ? '— Will Not Import (Already Logged) —' : unconfirmedMismatch ? '— Review Mismatch (Skipped) —' : '— Skip —'}
-                </option>
+              <div style="display: flex; flex-direction: column; gap: 4px; width: 100%; max-height: 210px; overflow-y: auto;">
+                {#if ex}
+                  <span class="tag g-st-e3ec32">Already Logged</span>
+                {/if}
                 {#each row.matches as m (m.id)}
-                  <option value={m.id}>
-                    {m.title}{m.season_number ? ` · Season ${m.season_number}` : ''} ({m.release_date?.slice(0, 4) || 'n.d.'}){m.director ? ` — Dir. ${m.director}` : ''}
-                  </option>
+                  {@const isChosen = row.selected && String(row.selected.id) === String(m.id)}
+                  {@const mPoster = m.poster_url || (m.poster_path ? posterSmall + m.poster_path : '')}
+                  <button
+                    type="button"
+                    class="candidate-row"
+                    style="display: flex; align-items: center; gap: 8px; text-align: left; width: 100%; padding: 4px 6px; border: 1px solid {isChosen ? '#111' : '#d8d5c8'}; background: {isChosen ? '#f0eee4' : '#fff'}; cursor: pointer;"
+                    on:click={() => {
+                      const existing = findExistingInCatalog(m);
+                      rows[i] = {
+                        ...row,
+                        previewMatch: m,
+                        existingMatch: existing,
+                        selected: existing ? null : m,
+                        title: m.title || row.title,
+                        year: m.release_date?.slice(0, 4) || String(m.year || '') || row.year
+                      };
+                    }}
+                  >
+                    {#if mPoster}
+                      <img src={mPoster} alt="" style="width: 24px; height: 36px; object-fit: cover; flex-shrink: 0;" />
+                    {/if}
+                    <span style="flex: 1; min-width: 0; font-size: 0.8rem;">
+                      <strong>{m.title}{m.season_number ? ` · Season ${m.season_number}` : ''}</strong>
+                      <span class="mono">({m.release_date?.slice(0, 4) || m.year || 'n.d.'})</span>
+                      {#if m.director}<span class="muted"> — Dir. {m.director}</span>{/if}
+                    </span>
+                    {#if isChosen}
+                      <span class="tag">Selected</span>
+                    {/if}
+                  </button>
                 {/each}
-              </select>
+                {#if row.selected}
+                  <button
+                    type="button"
+                    class="btn-text"
+                    style="align-self: flex-start; font-size: 0.76rem;"
+                    on:click={() => { rows[i] = { ...row, selected: null }; }}
+                  >Skip this title</button>
+                {/if}
+              </div>
             {:else if row.status === 'none'}
               <span class="miss">No match found</span>
             {:else if row.status === 'error'}
@@ -532,7 +576,7 @@ Better Call Saul Season 6 | drama"
             <button
               type="button"
               class="icon-btn"
-              on:click={() => { rows[i] = { ...row, refining: !row.refining }; }}
+              on:click={() => { rows[i] = { ...row, refining: !row.refining, draftQuery: row.draftQuery ?? buildRefineQuery(row) }; }}
               title="Refine search (edit title, year, director, or IMDb ID)"
               aria-label="Refine search"
             >
