@@ -9,6 +9,8 @@
   import MovieDetailView from '$lib/MovieDetailView.svelte';
   import SearchResultsView from '$lib/SearchResultsView.svelte';
   import GuppyHeader from '$lib/GuppyHeader.svelte';
+  import { discoverImportFolder } from '$lib/importDiscovery.js';
+  import { scanLibrary } from '$lib/libraryScan.js';
   import { GUPPY_CONFIG, MEDIA_ROOT, TV_ROOT, THE_MOVIES_ROOT, VIDEO_EXTS, readDir, writeTextFile, initDb, inferMetadata, inferFolder, searchTmdb, findTmdbByImdbId, searchWikipediaMovie, fetchPersonFilmography, saveToLibrary, saveWantedMovie, updateExistingMovie, updateMovieTagsAndClips, syncAllJellyfinSidecars, removeMovieFromLibrary, updateMovieWatchStatus, undoActivity, searchUniversal, searchTmdbTv, fetchTvSeasonDetails, saveTvSeasonToLibrary, saveWantedTvSeason, updateSeasonEpisodes, computeSeasonWatchStatus, parseLooseTvFilename, exportCatalogToJson, reconcileTvEpisodesOnDisk, backfillMissingTvMetadata, backfillMissingMovieMetadata, fetchEnrichedTvShow, logActivity, writeJellyfinTvSidecars, isRemoteClient, getConnectionStatus, mountSharedDrive,migrateNonAdultMovies } from '$lib/guppyStore.js';
 
   let viewMode = 'collection';
@@ -161,42 +163,25 @@
       do {
         auditQueued = false;
         try {
-      const db = await initDb();
-      databaseEntries = await db.select("SELECT * FROM wishlist_videos ORDER BY title ASC");
-      const theMovieEntries = await readDir(THE_MOVIES_ROOT).catch(() => []);
-      const theMovieFolders = theMovieEntries
-        .filter(e => e.isDirectory && !e.name.startsWith('.') && e.name !== 'deleted')
-        .map(e => e.name);
-
-      const artMovieEntries = !isRemote ? await readDir(MEDIA_ROOT).catch(() => []) : [];
-      const artMovieFolders = artMovieEntries
-        .filter(e => e.isDirectory && !e.name.startsWith('.') && e.name !== 'deleted')
-        .map(e => e.name);
-
-      const movieFolders = [...new Set([...theMovieFolders, ...artMovieFolders])].sort();
-
-      const tvEntries = await readDir(TV_ROOT).catch(() => []);
-      const tvFolders = tvEntries
-        .filter(e => e.isDirectory && !e.name.startsWith('.') && e.name !== 'deleted')
-        .map(e => e.name)
-        .sort();
-
-      diskFolders = [...new Set([...movieFolders, ...tvFolders])].sort();
-      if (!isRemote) {
-        await reconcileTvEpisodesOnDisk();
-        databaseEntries = await db.select("SELECT * FROM wishlist_videos ORDER BY title ASC");
-      }
+      const snapshot = await scanLibrary({
+        initDb,
+        readDir,
+        roots: { movies: THE_MOVIES_ROOT, media: MEDIA_ROOT, tv: TV_ROOT },
+        isRemote,
+        reconcileTvEpisodesOnDisk
+      });
+      databaseEntries = snapshot.databaseEntries;
+      diskFolders = snapshot.diskFolders;
+      orphans = snapshot.orphans;
       if (activeMovie?.folder_name) {
         const refreshed = databaseEntries.find(e => e.folder_name === activeMovie.folder_name);
         if (refreshed) activeMovie = refreshed;
       }
-      const inDb = databaseEntries.map(r => r.folder_name);
-      orphans = movieFolders.filter(f => !inDb.includes(f));
 
       const nextInputs = { ...inputs };
       if (!isRemote) for (const folder of orphans) {
         const key = `root:${folder}`;
-        const orphanRoot = theMovieFolders.includes(folder) ? THE_MOVIES_ROOT : MEDIA_ROOT;
+        const orphanRoot = snapshot.orphanRoots[folder];
         if (!Reflect.get(nextInputs, key)) Reflect.set(nextInputs, key, await inferFolder(`${orphanRoot}/${folder}`, folder));
       }
       inputs = nextInputs;
@@ -212,89 +197,15 @@
     try {
       const selected = await open({ directory: true, multiple: false, defaultPath: GUPPY_CONFIG.hostJellyRoot });
       if (!selected) return;
-      const entries = await readDir(selected);
-      const items = [];
-      const looseTvGroups = new Map();
-      const nextInputs = { ...inputs };
-
-      for (const entry of entries) {
-        if (entry.name.startsWith('.')) continue;
-        const isVideo = !entry.isDirectory && VIDEO_EXTS.some(ext => entry.name.toLowerCase().endsWith(ext));
-        if (!entry.isDirectory && !isVideo) continue;
-
-        if (!entry.isDirectory) {
-          const parsedTv = parseLooseTvFilename(entry.name, '');
-          if (parsedTv) {
-            if (!looseTvGroups.has(parsedTv.normKey)) {
-              looseTvGroups.set(parsedTv.normKey, {
-                parsedTv,
-                files: []
-              });
-            }
-            looseTvGroups.get(parsedTv.normKey).files.push({
-              name: entry.name,
-              sourcePath: `${selected}/${entry.name}`
-            });
-            continue;
-          }
-        }
-
-        let subTvFiles = [];
-        let subParsedTv = null;
-        if (entry.isDirectory) {
-          const subEntries = await readDir(`${selected}/${entry.name}`).catch(() => []);
-          const subVideos = subEntries.filter(se => !se.isDirectory && !se.name.startsWith('.') && VIDEO_EXTS.some(ext => se.name.toLowerCase().endsWith(ext)));
-          const parsedSubs = subVideos.map(sv => ({ file: sv, tv: parseLooseTvFilename(sv.name, entry.name) })).filter(x => x.tv);
-          if (parsedSubs.length > 0 && parsedSubs.length === subVideos.length) {
-            subTvFiles = subVideos.map(sv => ({ name: sv.name, sourcePath: `${selected}/${entry.name}/${sv.name}` }));
-            subParsedTv = parsedSubs.at(0).tv;
-          }
-        }
-        const key = `import:${entry.name}`;
-        items.push({
-          key,
-          name: entry.name,
-          isDirectory: entry.isDirectory,
-          sourcePath: `${selected}/${entry.name}`,
-          ...(subTvFiles.length > 0 ? { files: subTvFiles } : {})
-        });
-        if (!Reflect.get(nextInputs, key)) {
-          Reflect.set(
-            nextInputs,
-            key,
-            subParsedTv
-              ? { title: subParsedTv.title, year: subParsedTv.year, director: '', quality: '', media_type: 'tv', season_number: subParsedTv.season_number, watch_status: '' }
-              : (entry.isDirectory ? await inferFolder(`${selected}/${entry.name}`, entry.name) : inferMetadata(entry.name))
-          );
-        }
-      }
-
-      for (const [normKey, group] of looseTvGroups.entries()) {
-        const { parsedTv, files } = group;
-        const sPad = String(parsedTv.season_number).padStart(2, '0');
-        const label = `${parsedTv.title} - s${sPad} (${files.length} ${files.length === 1 ? 'episode' : 'episodes'})`;
-        const key = `import:tv:${normKey}`;
-        items.push({
-          key,
-          name: label,
-          isDirectory: false,
-          sourcePath: files.at(0).sourcePath,
-          files
-        });
-        if (!Reflect.get(nextInputs, key)) {
-          Reflect.set(nextInputs, key, {
-            title: parsedTv.title,
-            year: parsedTv.year,
-            director: '',
-            quality: '',
-            media_type: 'tv',
-            season_number: parsedTv.season_number,
-            watch_status: ''
-          });
-        }
-      }
-      items.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
-      inputs = nextInputs;
+      const result = await discoverImportFolder(selected, inputs, {
+        readDir,
+        videoExts: VIDEO_EXTS,
+        inferMetadata,
+        inferFolder,
+        parseLooseTvFilename
+      });
+      const { items } = result;
+      inputs = result.inputs;
       showBulkForm = false;
       auditResetNonce += 1;
       importQueue = items;

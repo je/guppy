@@ -13,6 +13,8 @@ const vite = await createServer({
 });
 
 const store = await vite.ssrLoadModule('/src/lib/guppyStore.js');
+const importDiscovery = await vite.ssrLoadModule('/src/lib/importDiscovery.js');
+const libraryScan = await vite.ssrLoadModule('/src/lib/libraryScan.js');
 
 test.after(async () => {
   await vite.close();
@@ -102,6 +104,72 @@ test('database migration errors are reported and not recorded as applied', async
   sqlite.close();
 });
 
+test('library scan reconciles local TV folders and reports movie orphans with their roots', async () => {
+  const roots = { movies: '/movies', media: '/media', tv: '/tv' };
+  const entries = {
+    '/movies': [
+      { name: 'Known', isDirectory: true },
+      { name: 'New Movie', isDirectory: true },
+      { name: '.hidden', isDirectory: true },
+      { name: 'deleted', isDirectory: true },
+      { name: 'not-a-folder.mkv', isDirectory: false }
+    ],
+    '/media': [
+      { name: 'New Movie', isDirectory: true },
+      { name: 'Art Movie', isDirectory: true }
+    ],
+    '/tv': [
+      { name: 'Series', isDirectory: true },
+      { name: 'deleted', isDirectory: true }
+    ]
+  };
+  let selectCount = 0;
+  let reconcileCount = 0;
+  const snapshot = await libraryScan.scanLibrary({
+    initDb: async () => ({
+      select: async () => {
+        selectCount += 1;
+        return selectCount === 1
+          ? [{ folder_name: 'Before reconciliation' }]
+          : [{ folder_name: 'Known' }, { folder_name: 'Series' }];
+      }
+    }),
+    readDir: async path => entries[path],
+    roots,
+    isRemote: false,
+    reconcileTvEpisodesOnDisk: async () => { reconcileCount += 1; }
+  });
+
+  assert.equal(selectCount, 2);
+  assert.equal(reconcileCount, 1);
+  assert.deepEqual(snapshot.databaseEntries, [{ folder_name: 'Known' }, { folder_name: 'Series' }]);
+  assert.deepEqual(snapshot.diskFolders, ['Art Movie', 'Known', 'New Movie', 'Series']);
+  assert.deepEqual(snapshot.orphans, ['Art Movie', 'New Movie']);
+  assert.deepEqual(snapshot.orphanRoots, {
+    'Art Movie': roots.media,
+    'New Movie': roots.movies
+  });
+});
+
+test('remote library scan skips local media roots and TV reconciliation', async () => {
+  const roots = { movies: '/movies', media: '/media', tv: '/tv' };
+  const snapshot = await libraryScan.scanLibrary({
+    initDb: async () => ({ select: async () => [{ folder_name: 'Present' }] }),
+    readDir: async path => {
+      if (path === roots.movies) return [{ name: 'Present', isDirectory: true }];
+      if (path === roots.tv) return [{ name: 'Series', isDirectory: true }];
+      assert.fail(`Unexpected folder scan: ${path}`);
+    },
+    roots,
+    isRemote: true,
+    reconcileTvEpisodesOnDisk: async () => assert.fail('Remote scan should not reconcile local episodes')
+  });
+
+  assert.deepEqual(snapshot.diskFolders, ['Present', 'Series']);
+  assert.deepEqual(snapshot.orphans, []);
+  assert.deepEqual(snapshot.orphanRoots, {});
+});
+
 test('inferMetadata parses release codes, bare 1080 resolution, and year', () => {
   const res = store.inferMetadata('Blondes Have More Fun RET_BHMF_1080_1979.mp4');
   assert.equal(res.title, 'Blondes Have More Fun');
@@ -128,6 +196,55 @@ test('parseLooseTvFilename extracts show, season, and episode', () => {
   assert.ok(ep);
   assert.equal(ep.season_number, 1);
   assert.equal(ep.episode_number, 5);
+});
+
+test('import discovery filters files, groups TV episodes, and preserves existing input edits', async () => {
+  const root = '/media';
+  const directories = {
+    [root]: [
+      { name: '.hidden.mkv', isDirectory: false },
+      { name: 'notes.txt', isDirectory: false },
+      { name: 'Nested', isDirectory: true },
+      { name: 'Loose Show S01E01 Pilot.mkv', isDirectory: false },
+      { name: 'Loose Show S01E02 Return.mkv', isDirectory: false },
+      { name: 'Standalone.mkv', isDirectory: false }
+    ],
+    [`${root}/Nested`]: [
+      { name: 'Nested Show S02E01 Premiere.mkv', isDirectory: false },
+      { name: '.hidden.mkv', isDirectory: false }
+    ]
+  };
+  const parseLooseTvFilename = (name) => {
+    const match = name.match(/^(.*?) S(\d{2})E(\d{2})/i);
+    if (!match) return null;
+    return {
+      title: match[1],
+      year: '2024',
+      season_number: Number(match[2]),
+      normKey: `${match[1].toLowerCase().replaceAll(' ', '-')}-s${match[2]}`
+    };
+  };
+  const result = await importDiscovery.discoverImportFolder(root, {
+    'import:Standalone.mkv': { title: 'Manually edited title' }
+  }, {
+    readDir: async path => directories[path],
+    videoExts: ['.mkv', '.mp4'],
+    inferMetadata: name => ({ title: name }),
+    inferFolder: async (_path, name) => ({ title: name }),
+    parseLooseTvFilename
+  });
+
+  assert.deepEqual(result.items.map(item => item.key), [
+    'import:tv:loose-show-s01',
+    'import:Nested',
+    'import:Standalone.mkv'
+  ]);
+  assert.equal(result.items[0].files.length, 2);
+  assert.equal(result.items[0].sourcePath, `${root}/Loose Show S01E01 Pilot.mkv`);
+  assert.deepEqual(result.items[1].files.map(file => file.name), ['Nested Show S02E01 Premiere.mkv']);
+  assert.equal(result.inputs['import:tv:loose-show-s01'].media_type, 'tv');
+  assert.equal(result.inputs['import:Nested'].season_number, 2);
+  assert.equal(result.inputs['import:Standalone.mkv'].title, 'Manually edited title');
 });
 
 test('All Svelte components compile cleanly without syntax or template errors', () => {
