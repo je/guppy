@@ -1139,8 +1139,8 @@ export async function updateExistingMovie(oldFolderName, existing, movie, onDisk
   );
   const rowsAffected = updateResult?.changes ?? updateResult?.rowsAffected;
   if (rowsAffected === 0) throw new Error(`Catalog entry "${oldFolderName}" was not updated.`);
-  const metaLabel = `${enriched.title || oldFolderName}${year ? ` (${year})` : ''}`;
-  await logActivity('Updated Metadata', metaLabel, enriched.director || '');
+  const metaLabel = enriched.title || oldFolderName;
+  await logActivity('Updated Metadata', metaLabel, finalImdb || enriched.director || '');
 
   if (current.status !== 'wanted' && onDisk) {
     await writeJellyfinSidecars(`${newRoot}/${newFolderName}`, {
@@ -1160,6 +1160,96 @@ export async function updateExistingMovie(oldFolderName, existing, movie, onDisk
     imdb_id_source: finalImdbSource,
     imdb_lookup_status: finalImdb ? 'matched' : (enriched.imdb_lookup_status || 'no_match')
   };
+}
+
+export function mergeTvSeasonEpisodes(previousEpisodes, freshEpisodes = []) {
+  if (freshEpisodes.length === 0) return previousEpisodes;
+  const previousByNumber = new Map(previousEpisodes.map(episode => [Number(episode.episode_number), episode]));
+  return freshEpisodes.map(episode => {
+    const previous = previousByNumber.get(Number(episode.episode_number)) || {};
+    return {
+      ...episode,
+      file_name: previous.file_name || '',
+      watch_status: previous.watch_status || '',
+      tags: previous.tags || '',
+      clips: previous.clips || ''
+    };
+  });
+}
+
+export async function updateExistingTvSeason(oldFolderName, existing, movie, onDisk) {
+  const seasonNumber = Number(movie.season_number) || Number(existing?.season_number) || 1;
+  let tvId = Number(movie.media_type === 'tv' ? movie.id : existing?.tmdb_id) || 0;
+
+  if (!tvId && movie.title) {
+    const matches = await searchTmdbTv(movie.title, movie.year || existing?.year || '').catch(() => []);
+    tvId = Number(matches.at(0)?.id) || 0;
+  }
+
+  const seasonData = tvId
+    ? await fetchTvSeasonDetails(tvId, seasonNumber).catch(() => ({}))
+    : {};
+  const tvMetadata = tvId
+    ? await fetchEnrichedTvShow(tvId).catch(() => ({}))
+    : {};
+
+  let previousEpisodes = [];
+  try {
+    previousEpisodes = existing?.episodes_json ? JSON.parse(existing.episodes_json) : [];
+  } catch (_) {}
+  const episodes = mergeTvSeasonEpisodes(previousEpisodes, seasonData.episodes || []);
+  const watchStatus = computeSeasonWatchStatus(episodes);
+  const db = await initDb();
+  const year = seasonData.air_date
+    ? Number(seasonData.air_date.slice(0, 4))
+    : (movie.release_date ? Number(movie.release_date.slice(0, 4)) : (Number(movie.year) || existing?.year || 0));
+  const posterUrl = seasonData.poster_url || movie.poster_url || existing?.poster_url || '';
+  const overview = seasonData.overview || movie.overview || existing?.overview || '';
+  const castList = seasonData.cast_list || movie.cast_list || tvMetadata.cast_list || existing?.cast_list || '';
+  const imdbId = seasonData.imdb_id || movie.imdb_id || tvMetadata.imdb_id || existing?.imdb_id || '';
+  const imdbIdSource = seasonData.imdb_id
+    ? 'tmdb'
+    : (movie.imdb_id_source || tvMetadata.imdb_id_source || existing?.imdb_id_source || (imdbId ? 'provided' : ''));
+  const director = movie.director || tvMetadata.director || existing?.director || '';
+
+  const updateResult = await db.execute(
+    `UPDATE wishlist_videos
+     SET title = ?, year = ?, poster_url = ?, overview = ?, cast_list = ?, director = ?, imdb_id = ?, tmdb_id = ?, episodes_json = ?, watch_status = ?, media_type = 'tv', season_number = ?, imdb_id_source = ?
+     WHERE folder_name = ?`,
+    [movie.title, year, posterUrl, overview, castList, director, imdbId, tvId, JSON.stringify(episodes), watchStatus, seasonNumber, imdbIdSource, oldFolderName]
+  );
+  const rowsAffected = updateResult?.changes ?? updateResult?.rowsAffected;
+  if (rowsAffected === 0) throw new Error(`Catalog entry "${oldFolderName}" was not updated.`);
+
+  await logActivity('Updated Metadata', `${movie.title} · Season ${seasonNumber}`, imdbId || '');
+
+  if (existing?.status !== 'wanted' && onDisk) {
+    await writeJellyfinTvSidecars(`${TV_ROOT}/${oldFolderName}`, {
+      ...existing,
+      title: movie.title,
+      year,
+      poster_url: posterUrl,
+      overview,
+      season_number: seasonNumber
+    }, episodes);
+  }
+
+  return {
+    ...existing,
+    ...movie,
+    title: movie.title,
+    year,
+    folder_name: oldFolderName,
+    imdb_id: imdbId,
+    imdb_id_source: imdbIdSource
+  };
+}
+
+export async function updateExistingCatalogEntry(oldFolderName, existing, movie, onDisk) {
+  const isTv = movie.media_type === 'tv' || existing?.media_type === 'tv';
+  return isTv
+    ? updateExistingTvSeason(oldFolderName, existing, movie, onDisk)
+    : updateExistingMovie(oldFolderName, existing, movie, onDisk);
 }
 
 export async function enrichFilmBatch(list) {

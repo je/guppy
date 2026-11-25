@@ -429,6 +429,11 @@ test('Re-matching Cannon Fodder attaches IMDb link automatically in Audit view',
   expect(updateCall?.params[3]).toBe('tt37545848');
   expect(updateCall?.params.at(-1)).toBe('1971 - Cannon Fodder [1080p]');
   expect(updateCall?.params[12]).toBe('imdb-suggestion');
+  const metadataActivityCalls = getExecuteCalls().filter(call =>
+    call.sql.includes('INSERT INTO activity_log') && call.params[0] === 'Updated Metadata'
+  );
+  expect(metadataActivityCalls).toHaveLength(1);
+  expect(metadataActivityCalls[0].params[2]).toContain('tt37545848');
 });
 
 test('Unmatched metadata lookup reports unavailable IMDb services instead of a no-match', async ({ page }) => {

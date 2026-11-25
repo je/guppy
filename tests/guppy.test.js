@@ -191,6 +191,25 @@ test('computeSeasonWatchStatus rolls up episode watch states', () => {
   assert.equal(store.computeSeasonWatchStatus([{ watch_status: 'disliked' }, { watch_status: 'disliked' }]), 'disliked');
 });
 
+test('TV metadata updates retain episode files, watch states, tags, and clips', () => {
+  const previous = [
+    { episode_number: 1, name: 'Old name', file_name: 'episode-1.mkv', watch_status: 'liked', tags: 'favorite', clips: 'intro' },
+    { episode_number: 2, file_name: '', watch_status: '', tags: '', clips: '' }
+  ];
+  const fresh = [
+    { episode_number: 1, name: 'Updated name', overview: 'New metadata' },
+    { episode_number: 2, name: 'Second episode' },
+    { episode_number: 3, name: 'New episode' }
+  ];
+
+  assert.deepEqual(store.mergeTvSeasonEpisodes(previous, fresh), [
+    { ...fresh[0], file_name: 'episode-1.mkv', watch_status: 'liked', tags: 'favorite', clips: 'intro' },
+    { ...fresh[1], file_name: '', watch_status: '', tags: '', clips: '' },
+    { ...fresh[2], file_name: '', watch_status: '', tags: '', clips: '' }
+  ]);
+  assert.deepEqual(store.mergeTvSeasonEpisodes(previous, []), previous);
+});
+
 test('parseLooseTvFilename extracts show, season, and episode', () => {
   const ep = store.parseLooseTvFilename('Star Trek S01E05 The Enemy Within 1080p.mkv');
   assert.ok(ep);

@@ -11,7 +11,7 @@
   import GuppyHeader from '$lib/GuppyHeader.svelte';
   import { discoverImportFolder } from '$lib/importDiscovery.js';
   import { scanLibrary } from '$lib/libraryScan.js';
-  import { GUPPY_CONFIG, MEDIA_ROOT, TV_ROOT, THE_MOVIES_ROOT, VIDEO_EXTS, readDir, writeTextFile, initDb, inferMetadata, inferFolder, searchTmdb, findTmdbByImdbId, searchWikipediaMovie, fetchPersonFilmography, saveToLibrary, saveWantedMovie, updateExistingMovie, updateMovieTagsAndClips, syncAllJellyfinSidecars, removeMovieFromLibrary, updateMovieWatchStatus, undoActivity, searchUniversal, searchTmdbTv, fetchTvSeasonDetails, saveTvSeasonToLibrary, saveWantedTvSeason, updateSeasonEpisodes, computeSeasonWatchStatus, parseLooseTvFilename, exportCatalogToJson, reconcileTvEpisodesOnDisk, backfillMissingTvMetadata, backfillMissingMovieMetadata, fetchEnrichedTvShow, logActivity, writeJellyfinTvSidecars, isRemoteClient, getConnectionStatus, mountSharedDrive,migrateNonAdultMovies } from '$lib/guppyStore.js';
+  import { GUPPY_CONFIG, MEDIA_ROOT, TV_ROOT, THE_MOVIES_ROOT, VIDEO_EXTS, readDir, writeTextFile, initDb, inferMetadata, inferFolder, searchTmdb, findTmdbByImdbId, searchWikipediaMovie, fetchPersonFilmography, saveToLibrary, saveWantedMovie, updateExistingCatalogEntry, updateMovieTagsAndClips, syncAllJellyfinSidecars, removeMovieFromLibrary, updateMovieWatchStatus, undoActivity, searchUniversal, searchTmdbTv, fetchTvSeasonDetails, saveTvSeasonToLibrary, saveWantedTvSeason, updateSeasonEpisodes, computeSeasonWatchStatus, parseLooseTvFilename, exportCatalogToJson, reconcileTvEpisodesOnDisk, backfillMissingTvMetadata, backfillMissingMovieMetadata, isRemoteClient, getConnectionStatus, mountSharedDrive,migrateNonAdultMovies } from '$lib/guppyStore.js';
 
   let viewMode = 'collection';
   let prevViewMode = 'collection';
@@ -377,107 +377,21 @@
     try {
       const existing = databaseEntries.find(e => e.folder_name === oldFolder);
       const isTv = movie.media_type === 'tv' || existing?.media_type === 'tv';
-
-      if (isTv) {
-        const seasonNum = Number(movie.season_number) || Number(existing?.season_number) || 1;
-        let tvId = Number(movie.media_type === 'tv' ? movie.id : existing?.tmdb_id) || 0;
-
-        if (!tvId && movie.title) {
-          const tvMatches = await searchTmdbTv(movie.title, movie.year || existing?.year || '').catch(() => []);
-          tvId = Number(tvMatches.at(0)?.id) || 0;
-        }
-
-        const seasonData = tvId
-          ? await fetchTvSeasonDetails(tvId, seasonNum).catch(() => ({}))
-          : {};
-        const tvMeta = tvId
-          ? await fetchEnrichedTvShow(tvId).catch(() => ({}))
-          : {};
-
-        const prevEpisodes = (() => {
-          try {
-            return existing?.episodes_json ? JSON.parse(existing.episodes_json) : [];
-          } catch (_) {
-            return [];
-          }
-        })();
-        const prevByNum = new Map(prevEpisodes.map(ep => [Number(ep.episode_number), ep]));
-
-        const mergedEpisodes = seasonData.episodes?.length > 0
-          ? seasonData.episodes.map(freshEp => {
-              const oldEp = prevByNum.get(Number(freshEp.episode_number)) || {};
-              return {
-                ...freshEp,
-                file_name: oldEp.file_name || '',
-                watch_status: oldEp.watch_status || '',
-                tags: oldEp.tags || '',
-                clips: oldEp.clips || ''
-              };
-            })
-          : prevEpisodes;
-
-        const rolledWatch = computeSeasonWatchStatus(mergedEpisodes);
-        const db = await initDb();
-        const seasonYear = seasonData.air_date
-          ? Number(seasonData.air_date.slice(0, 4))
-          : (movie.release_date ? Number(movie.release_date.slice(0, 4)) : (Number(movie.year) || existing?.year || 0));
-        const posterUrl = seasonData.poster_url || movie.poster_url || existing?.poster_url || '';
-        const overview = seasonData.overview || movie.overview || existing?.overview || '';
-        const castList = seasonData.cast_list || movie.cast_list || tvMeta.cast_list || existing?.cast_list || '';
-        const imdbId = seasonData.imdb_id || movie.imdb_id || tvMeta.imdb_id || existing?.imdb_id || '';
-        const imdbIdSource = seasonData.imdb_id
-          ? 'tmdb'
-          : (movie.imdb_id_source || tvMeta.imdb_id_source || existing?.imdb_id_source || (imdbId ? 'provided' : ''));
-        const director = movie.director || tvMeta.director || existing?.director || '';
-
-        await db.execute(
-          `UPDATE wishlist_videos
-           SET title = ?, year = ?, poster_url = ?, overview = ?, cast_list = ?, director = ?, imdb_id = ?, tmdb_id = ?, episodes_json = ?, watch_status = ?, media_type = 'tv', season_number = ?, imdb_id_source = ?
-           WHERE folder_name = ?`,
-          [movie.title, seasonYear, posterUrl, overview, castList, director, imdbId, tvId, JSON.stringify(mergedEpisodes), rolledWatch, seasonNum, imdbIdSource, oldFolder]
-        );
-
-        await logActivity('Updated Metadata', `${movie.title} · Season ${seasonNum}`, imdbId || '');
-
-        if (existing?.status !== 'wanted' && diskFolders.includes(oldFolder)) {
-          await writeJellyfinTvSidecars(`${TV_ROOT}/${oldFolder}`, {
-            ...existing,
-            title: movie.title,
-            year: seasonYear,
-            poster_url: posterUrl,
-            overview,
-            season_number: seasonNum
-          }, mergedEpisodes);
-        }
-
-        const next = { ...searchResults };
-        Reflect.deleteProperty(next, `db:${oldFolder}`);
-        Reflect.deleteProperty(next, oldFolder);
-        searchResults = next;
-        await runAudit();
-        return {
-          ...existing,
-          ...movie,
-          title: movie.title,
-          year: seasonYear,
-          folder_name: oldFolder,
-          imdb_id: imdbId,
-          imdb_id_source: imdbIdSource
-        };
-      }
-
-      const updatedEntry = await updateExistingMovie(oldFolder, existing, movie, diskFolders.includes(oldFolder));
-      const resolvedTt = updatedEntry?.imdb_id || movie.imdb_id || '';
-      await logActivity('Updated Metadata', movie.title, resolvedTt);
+      const updatedEntry = await updateExistingCatalogEntry(
+        oldFolder,
+        existing,
+        movie,
+        diskFolders.includes(oldFolder)
+      );
       const next = { ...searchResults };
       Reflect.deleteProperty(next, `db:${oldFolder}`);
       Reflect.deleteProperty(next, oldFolder);
       searchResults = next;
       await runAudit();
-      if (showStatus && ['failed', 'incomplete'].includes(updatedEntry?.imdb_lookup_status)) {
+      if (!isTv && showStatus && ['failed', 'incomplete'].includes(updatedEntry?.imdb_lookup_status)) {
         const lookupOutcome = updatedEntry.imdb_lookup_status === 'incomplete' ? 'was incomplete' : 'failed';
         statusMsg = `Metadata updated, but IMDb lookup ${lookupOutcome}: ${updatedEntry.imdb_lookup_error || 'lookup service unavailable.'}`;
-      } else if (showStatus && !updatedEntry?.imdb_id) {
+      } else if (!isTv && showStatus && !updatedEntry?.imdb_id) {
         statusMsg = `Metadata updated, but no IMDb ID match was found for "${updatedEntry?.title || movie.title}".`;
       }
       return updatedEntry;
