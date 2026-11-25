@@ -18,6 +18,7 @@
   export let onWatchStatus;
   export let onOpenMovie;
   export let auditIconTitle = false;
+  export let successMessage = '';
 
   $: isAdultCard = String(item?.tags || '').toLowerCase().split(',').map(s => s.trim()).includes('adult');
   $: auditIconColor = item?.watch_status === 'liked'
@@ -30,6 +31,15 @@
 
   const posterSmall = ["https:/", "image.tmdb.org", "t", "p", "w154"].join("/");
   const imdbBase = ["https:/", "www.imdb.com", "title", ""].join("/");
+  const imdbSourceLabels = {
+    tmdb: 'TMDb',
+    'imdb-suggestion': 'IMDb title suggestions',
+    wikidata: 'Wikidata',
+    'folder-name': 'Existing folder name',
+    'imdb-id-lookup': 'IMDb ID lookup',
+    provided: 'Provided metadata'
+  };
+  $: imdbSourceLabel = imdbSourceLabels[item?.imdb_id_source] || 'Unknown';
 
   let editingTags = false;
   let draftTags = item.tags || '';
@@ -47,6 +57,10 @@
   let queryMediaType = item.media_type === 'tv' ? 'tv' : 'movie';
   let editingPoster = false;
   let justMatched = false;
+  let localSuccessMessage = '';
+  let localSuccessIsError = false;
+  let successTimer = null;
+  let successSequence = 0;
   let draftPosterUrl = item.poster_url || '';
   let combinedLookup = `${item.title || ''}${item.year ? ` (${item.year})` : ''}${item.director ? ` [${item.director}]` : ''}`.trim();
   function parseCombinedLookup() {
@@ -140,6 +154,33 @@
     queryDirector = item.director || '';
     queryMediaType = item.media_type === 'tv' ? 'tv' : 'movie';
     showLookupBox = !showLookupBox;
+  }
+
+  async function selectMatch(match) {
+    if (!onSelect) return;
+    const result = await onSelect?.(match);
+    if (result === false) return;
+
+    const sequence = ++successSequence;
+    const imdbId = result?.imdb_id || match.imdb_id || '';
+    localSuccessIsError = ['failed', 'incomplete'].includes(result?.imdb_lookup_status);
+    if (localSuccessIsError) {
+      const lookupOutcome = result.imdb_lookup_status === 'incomplete' ? 'was incomplete' : 'failed';
+      localSuccessMessage = `Updated "${match.title || item.title}", but IMDb lookup ${lookupOutcome}: ${result.imdb_lookup_error || 'lookup service unavailable.'}`;
+    } else if (!imdbId) {
+      localSuccessMessage = `Updated "${match.title || item.title}", but no IMDb match was found; it remains unmatched.`;
+    } else {
+      localSuccessMessage = `Updated "${match.title || item.title}" · IMDb ${imdbId}`;
+    }
+    justMatched = true;
+    if (successTimer) clearTimeout(successTimer);
+    successTimer = setTimeout(() => {
+      if (sequence === successSequence) {
+        localSuccessMessage = '';
+        localSuccessIsError = false;
+        justMatched = false;
+      }
+    }, 4000);
   }
 
   async function openTagEditor() {
@@ -253,13 +294,16 @@
   <article
     class="catalog-entry"
     class:entry-row={auditIconTitle}
-    class:is-ready={auditIconTitle && justMatched}
+    class:is-ready={justMatched || Boolean(successMessage)}
     class:media-tv={item.media_type === 'tv'}
     class:media-movie={(item.media_type || 'movie') === 'movie'}
     class:flag-owned={onDrive && item.status !== 'wanted'}
     class:flag-missing={!onDrive && item.status !== 'wanted'}
     class:flag-wanted={item.status === 'wanted'}
   >
+    {#if successMessage || localSuccessMessage}
+      <div class:success-banner={!localSuccessIsError} class:error-banner={localSuccessIsError} class="card-success-banner" role={localSuccessIsError ? 'alert' : 'status'} aria-live="polite">{successMessage || localSuccessMessage}</div>
+    {/if}
     <div class="entry-body">
       <button type="button" class="poster-btn" on:click={() => { if (auditIconTitle) { draftPosterUrl = item.poster_url || ''; editingPoster = !editingPoster; } else { onOpenMovie?.(item); } }} title={auditIconTitle ? 'Click to set Poster URL' : 'Open movie details'}>
         {#if item.poster_url}
@@ -353,7 +397,13 @@
             </button>
 
             {#if item.imdb_id}
-              <button type="button" class="icon-btn" on:click={copyImdb} title="Copy IMDb link ({imdbBase + item.imdb_id})" aria-label="Copy IMDb link">
+              <button
+                type="button"
+                class="icon-btn"
+                on:click={copyImdb}
+                title={`IMDb ID source: ${imdbSourceLabel}`}
+                aria-label="Copy IMDb link"
+              >
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
               </button>
             {/if}
@@ -501,7 +551,7 @@
     </div>
 
     {#if editingPoster}
-      <form class="relookup-bar" style="display: flex; align-items: center; gap: 6px;" on:submit|preventDefault={() => { onSelect?.({ ...item, poster_url: draftPosterUrl.trim() }); editingPoster = false; }}>
+      <form class="relookup-bar" style="display: flex; align-items: center; gap: 6px;" on:submit|preventDefault={() => { selectMatch({ ...item, poster_url: draftPosterUrl.trim() }); editingPoster = false; }}>
         <input type="text" style="flex: 1; min-width: 200px;" placeholder="Paste poster image URL (https://…)" bind:value={draftPosterUrl} />
         <button type="submit" class="btn-save">Save Poster</button>
         <button type="button" class="btn-cancel" on:click={() => editingPoster = false}>Cancel</button>
@@ -543,8 +593,8 @@
             class="candidate-row"
             role="button"
             tabindex="0"
-            on:click={() => { justMatched = true; onSelect(match); showLookupBox = false; }}
-            on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); justMatched = true; onSelect(match); showLookupBox = false; } }}
+            on:click={() => { selectMatch(match); showLookupBox = false; }}
+            on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectMatch(match); showLookupBox = false; } }}
           >
             {#if match.poster_url || match.poster_path}
               <img src={match.poster_url || (posterSmall + match.poster_path)} alt={match.title} />
@@ -563,7 +613,7 @@
                     <button
                       type="button"
                       class="tax-pill season-pill"
-                      on:click|stopPropagation={() => { justMatched = true; onSelect({ ...match, season_number: sNum }); showLookupBox = false; }}
+                      on:click|stopPropagation={() => { selectMatch({ ...match, season_number: sNum }); showLookupBox = false; }}
                     >
                       S{String(sNum).padStart(2, '0')}
                     </button>

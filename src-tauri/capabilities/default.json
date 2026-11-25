@@ -19,6 +19,8 @@
       "allow": [
         { "url": "https://api.themoviedb.org/**" },
         { "url": "https://image.tmdb.org/**" },
+        { "url": "https://v2.sg.media-imdb.com/**" },
+        { "url": "https://www.wikidata.org/**" },
         { "url": "https://*.wikipedia.org/**" },
         { "url": "https://wikimedia.org/**" },
         { "url": "https://upload.wikimedia.org**" },

@@ -20,7 +20,6 @@
   export let databaseEntries = [];
   export let diskFolders = [];
   export let importQueue = [];
-  export let stagedBanner = '';
   export let inputs = {};
   export let searchResults = {};
   export let loadingLookup = {};
@@ -32,6 +31,8 @@
   export let onRewriteMetafiles = null;
   export let onRescanLibrary = null;
   export let onExportJson = null;
+  export let onRetryMissingMetadata = null;
+  export let onUndoActivity = null;
   let confirmRescan = false;
   let confirmRewrite = false;
   let confirmWriteMissing = false;
@@ -41,6 +42,20 @@
     activeHealthFilter = 'metafiles';
     showRecentActivity = false;
     onClearSubViews?.();
+  }
+
+  async function undoLogEntry(log) {
+    if (!log?.undo_payload || undoingActivityId !== null) return;
+    undoingActivityId = log.id;
+    undoErrors = { ...undoErrors, [log.id]: '' };
+    try {
+      await onUndoActivity?.(log.id);
+      await refreshAuditExtras(true);
+    } catch (err) {
+      undoErrors = { ...undoErrors, [log.id]: `Undo failed: ${String(err)}` };
+    } finally {
+      undoingActivityId = null;
+    }
   }
   export let onClearSubViews = null;
   let showRecentActivity = true;
@@ -74,6 +89,72 @@
   let activityLimit = 40;
   let missingSidecars = cachedMissingSidecars || [];
   let scanningSidecars = false;
+  let healthUpdateSequence = 0;
+  let retryingMetadata = false;
+  let metadataRetryMessage = '';
+  let metadataRetryTimer = null;
+
+  async function updateHealthEntry(item, match) {
+    const updated = await onUpdateLogged(item.folder_name, match);
+    if (!updated || updated === false) return updated;
+
+    const successToken = ++healthUpdateSequence;
+    const successMessage = `Updated "${updated.title || item.title}"${updated.imdb_id ? ` · IMDb ${updated.imdb_id}` : ''}`;
+    const completedEntry = {
+      ...updated,
+      missingFiles: item.missingFiles,
+      successMessage,
+      successToken
+    };
+    const isSameEntry = (entry) =>
+      (item.id && entry.id === item.id) || entry.folder_name === item.folder_name;
+    const replaceEntry = (entries) => {
+      const found = entries.some(isSameEntry);
+      return found
+        ? entries.map(entry => isSameEntry(entry) ? completedEntry : entry)
+        : [...entries, completedEntry];
+    };
+
+    missingSidecars = replaceEntry(missingSidecars);
+    cachedMissingSidecars = replaceEntry(cachedMissingSidecars || []);
+    setTimeout(async () => {
+      const isThisCompletion = (entry) => entry.successToken === successToken;
+      missingSidecars = missingSidecars.filter(entry => !isThisCompletion(entry));
+      cachedMissingSidecars = (cachedMissingSidecars || []).filter(entry => !isThisCompletion(entry));
+      lastSidecarScanKey = '';
+      await refreshAuditExtras(true);
+    }, 4000);
+    return updated;
+  }
+
+  async function retryMissingMetadata() {
+    if (retryingMetadata || !onRetryMissingMetadata) return;
+    retryingMetadata = true;
+    metadataRetryMessage = '';
+    if (metadataRetryTimer) clearTimeout(metadataRetryTimer);
+    try {
+      const result = await onRetryMissingMetadata();
+      await refreshAuditExtras(true);
+      if (result && typeof result === 'object' && 'remaining' in result) {
+        metadataRetryMessage = result.remaining === 0
+          ? 'All catalog entries now have IMDb IDs.'
+          : result.resolved > 0
+            ? `Resolved ${result.resolved} IMDb ID(s); ${result.remaining} still unmatched.`
+            : `No additional IMDb IDs were found; ${result.remaining} still unmatched.`;
+      } else {
+        metadataRetryMessage = result
+          ? 'Catalog metadata refreshed.'
+          : 'No additional metadata was found.';
+      }
+    } catch (err) {
+      metadataRetryMessage = `Metadata retry failed: ${err}`;
+    } finally {
+      retryingMetadata = false;
+      metadataRetryTimer = setTimeout(() => {
+        metadataRetryMessage = '';
+      }, 4000);
+    }
+  }
 
   function isAdultEntry(entry) {
     return String(entry?.tags || '')
@@ -147,6 +228,8 @@
     return databaseEntries.find(e => normalizeTitleKey(e.title) === targetKey) || null;
   }
   let writingMissingSidecars = '';
+  let undoingActivityId = null;
+  let undoErrors = {};
 
   async function refreshAuditExtras(forceScan = false) {
     activityEntries = await loadActivityLog(activityLimit).catch(() => []);
@@ -180,7 +263,7 @@
   $: missingEntries = databaseEntries.filter(i => i.status !== 'wanted' && !diskFolders.includes(i.folder_name));
   $: noPosterEntries = databaseEntries.filter(i => !i.poster_url || !i.poster_url.trim());
   $: noImdbEntries = databaseEntries.filter(
-    i => (!i.imdb_id || !i.imdb_id.trim()) && !Number(i.tmdb_id)
+    i => !i.imdb_id || !i.imdb_id.trim()
   );
   $: noQualityEntries = databaseEntries.filter(
     i => i.status !== 'wanted' && (i.media_type || 'movie') === 'movie' && (!i.quality || !i.quality.trim())
@@ -209,7 +292,7 @@
 
   $: activeHealthLabel =
     activeHealthFilter === 'metafiles' ? 'Missing Poster or NFO Metafiles' :
-    activeHealthFilter === 'imdb' ? 'Unmatched in TMDB/Wikipedia' :
+    activeHealthFilter === 'imdb' ? 'Missing IMDb IDs' :
     activeHealthFilter === 'quality' ? 'Unknown File Quality' :
     activeHealthFilter === 'tv' ? 'Seasons with Missing Episodes' :
     '';
@@ -333,7 +416,11 @@
     <div class="section-bar">
       <h2>{activeHealthList.length} {activeHealthLabel}</h2>
       <div class="g-st-133d27" style="display: flex; align-items: center; gap: 8px;">
-        {#if activeHealthFilter === 'metafiles'}
+        {#if activeHealthFilter === 'imdb'}
+          <button type="button" class="btn-primary" disabled={retryingMetadata} on:click={retryMissingMetadata}>
+            {retryingMetadata ? 'Retrying Metadata…' : 'Retry Metadata Lookups'}
+          </button>
+        {:else if activeHealthFilter === 'metafiles'}
           {#if missingSidecars.length > 0}
             {#if writingMissingSidecars}
               <button type="button" class="btn-primary" disabled>{writingMissingSidecars}</button>
@@ -371,9 +458,14 @@
         {/if}
       </div>
     </div>
+    {#if metadataRetryMessage}
+      <div class:success-banner={!metadataRetryMessage.startsWith('Metadata retry failed:')} class:error-banner={metadataRetryMessage.startsWith('Metadata retry failed:')} role={metadataRetryMessage.startsWith('Metadata retry failed:') ? 'alert' : 'status'} aria-live="polite">
+        {metadataRetryMessage}
+      </div>
+    {/if}
     {#if activeHealthList.length > 0}
       <div class="grid-3">
-        {#each activeHealthList as item (item.folder_name)}
+        {#each activeHealthList as item (item.id || item.folder_name)}
           <LoggedCard
             {item}
             auditIconTitle={true}
@@ -381,7 +473,7 @@
             results={Reflect.get(searchResults, `db:${item.folder_name}`)}
             onLookup={(t, y, d, m) => onLookup(`db:${item.folder_name}`, t, y, d, m)}
             onWikiLookup={(t, y, d) => onWikiLookup?.(`db:${item.folder_name}`, t, y, d)}
-            onSelect={(m) => onUpdateLogged(item.folder_name, m)}
+            onSelect={(m) => updateHealthEntry(item, m)}
             onDelete={() => onDeleteLogged(item.folder_name)}
             {onPersonClick}
             {onSaveTags}
@@ -408,34 +500,33 @@
   />
 {/if}
 
-{#if importQueue.length > 0 || stagedBanner}
+{#if importQueue.length > 0}
   <section class="staged-section">
-    {#if importQueue.length > 0}
-      <div class="section-bar">
-        <h2>Staged Import <span class="count">({importQueue.length})</span></h2>
-        <button class="btn-text" on:click={onClearImport}>Close</button>
-      </div>
-    {/if}
-    {#if stagedBanner}
-      <div class="error-banner" style="margin-bottom: 10px; background: #edf7ed; border-color: #2b7a3d; color: #1b4d27;">{stagedBanner}</div>
-    {/if}
+    <div class="section-bar">
+      <h2>Staged Import <span class="count">({importQueue.filter(item => !item.successMessage).length})</span></h2>
+      <button class="btn-text" on:click={onClearImport}>Close</button>
+    </div>
     {#each importQueue as item (item.key)}
-      <MovieCard
-        {item}
-        {databaseEntries}
-        bind:data={inputs[item.key]}
-        buttonLabel={item.isDirectory ? 'Move, Rename & Log' : 'Pack & Log'}
-        loading={Reflect.get(loadingLookup, item.key)}
-        results={Reflect.get(searchResults, item.key)}
-        onLookup={() => onLookup(item.key)}
-        onLookupMore={(nextLimit) => onLookupMore?.(item.key, nextLimit)}
-        onRemove={() => { importQueue = importQueue.filter(q => q.key !== item.key); }}
-        onWikiLookup={() => onWikiLookup(item.key)}
-        onSelect={(m) => onSelect(item.key, m)}
-        onSave={() => onSave(item)}
-        error={Reflect.get(saveErrors, item.key) || ''}
-        {onPersonClick}
-      />
+      {#if item.successMessage}
+        <div class="success-banner" role="status" aria-live="polite">{item.successMessage}</div>
+      {:else}
+        <MovieCard
+          {item}
+          {databaseEntries}
+          bind:data={inputs[item.key]}
+          buttonLabel={item.isDirectory ? 'Move, Rename & Log' : 'Pack & Log'}
+          loading={Reflect.get(loadingLookup, item.key)}
+          results={Reflect.get(searchResults, item.key)}
+          onLookup={() => onLookup(item.key)}
+          onLookupMore={(nextLimit) => onLookupMore?.(item.key, nextLimit)}
+          onRemove={() => { importQueue = importQueue.filter(q => q.key !== item.key); }}
+          onWikiLookup={() => onWikiLookup(item.key)}
+          onSelect={(m) => onSelect(item.key, m)}
+          onSave={() => onSave(item)}
+          error={Reflect.get(saveErrors, item.key) || ''}
+          {onPersonClick}
+        />
+      {/if}
     {/each}
   </section>
 {/if}
@@ -459,14 +550,15 @@
         error={Reflect.get(saveErrors, `root:${folder}`) || ''}
         {onPersonClick}
       />
-    {:else}
-      <p class="empty-note">All folders on drive are accounted for.</p>
     {/each}
+    {#if orphans.length === 0}
+      <p class="empty-note">All folders on drive are accounted for.</p>
+    {/if}
   </section>
 
   <section>
     <div class="section-bar"><h2>Missing <span class="count">({missingEntries.length})</span></h2></div>
-    {#each missingEntries as item (item.folder_name)}
+    {#each missingEntries as item (item.id || item.folder_name)}
       <LoggedCard
         {item}
         auditIconTitle={true}
@@ -527,6 +619,17 @@
           {/if}
           {#if log.detail}
             <span class="muted">({log.detail})</span>
+          {/if}
+          {#if log.undo_payload && onUndoActivity}
+            <button
+              type="button"
+              class="btn btn-sm"
+              disabled={undoingActivityId !== null}
+              on:click={() => undoLogEntry(log)}
+            >{undoingActivityId === log.id ? 'Undoing…' : 'Undo'}</button>
+          {/if}
+          {#if undoErrors[log.id]}
+            <span class="muted" role="alert">{undoErrors[log.id]}</span>
           {/if}
         </div>
       {/each}

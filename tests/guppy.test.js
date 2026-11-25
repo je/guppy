@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import { compile } from 'svelte/compiler';
 import { createServer } from 'vite';
+import { runDbMigrations } from '../src/lib/dbMigrations.js';
 
 const vite = await createServer({
   server: { middlewareMode: true },
@@ -16,6 +18,90 @@ test.after(async () => {
   await vite.close();
 });
 
+function createTestDatabase() {
+  const sqlite = new DatabaseSync(':memory:');
+  return {
+    sqlite,
+    db: {
+      execute: async (sql, params = []) => sqlite.prepare(sql).run(...params),
+      select: async (sql, params = []) => sqlite.prepare(sql).all(...params)
+    }
+  };
+}
+
+test('database migrations initialize the current schema on an empty database', async () => {
+  const { sqlite, db } = createTestDatabase();
+  await runDbMigrations(db);
+
+  const videoColumns = sqlite.prepare("SELECT name FROM pragma_table_info('wishlist_videos')").all().map(row => row.name);
+  const activityColumns = sqlite.prepare("SELECT name FROM pragma_table_info('activity_log')").all().map(row => row.name);
+  assert.ok(videoColumns.includes('imdb_id'));
+  assert.ok(videoColumns.includes('imdb_id_source'));
+  assert.ok(videoColumns.includes('genres'));
+  assert.ok(activityColumns.includes('undo_payload'));
+  sqlite.close();
+});
+
+test('database migrations upgrade legacy tables, preserve rows, and run idempotently', async () => {
+  const { sqlite, db } = createTestDatabase();
+  sqlite.exec(`
+    CREATE TABLE wishlist_videos (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      folder_name TEXT UNIQUE,
+      title TEXT,
+      year INTEGER
+    );
+    INSERT INTO wishlist_videos (folder_name, title, year)
+      VALUES ('1971 - Cannon Fodder [imdbid-tt37545848]', 'Cannon Fodder', 1971);
+    CREATE TABLE activity_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      created_at TEXT,
+      action TEXT,
+      title TEXT,
+      detail TEXT
+    );
+  `);
+
+  await runDbMigrations(db);
+  await runDbMigrations(db);
+
+  const title = sqlite.prepare('SELECT title, year, imdb_id, imdb_id_source FROM wishlist_videos').get();
+  const videoColumns = sqlite.prepare("SELECT name FROM pragma_table_info('wishlist_videos')").all().map(row => row.name);
+  const activityColumns = sqlite.prepare("SELECT name FROM pragma_table_info('activity_log')").all().map(row => row.name);
+  const versions = sqlite.prepare('SELECT version FROM schema_migrations').all();
+  assert.equal(title.title, 'Cannon Fodder');
+  assert.equal(title.year, 1971);
+  assert.equal(title.imdb_id, 'tt37545848');
+  assert.equal(title.imdb_id_source, 'folder-name');
+  assert.ok(videoColumns.includes('imdb_id'));
+  assert.ok(videoColumns.includes('imdb_id_source'));
+  assert.ok(videoColumns.includes('episodes_json'));
+  assert.ok(activityColumns.includes('undo_payload'));
+  assert.equal(versions.length, 2);
+  assert.deepEqual(versions.map(row => row.version), [1, 2]);
+  sqlite.close();
+});
+
+test('database migration errors are reported and not recorded as applied', async () => {
+  const { sqlite, db } = createTestDatabase();
+  const failingDb = {
+    ...db,
+    execute: async (sql, params = []) => {
+      if (sql.includes('CREATE TABLE IF NOT EXISTS activity_log')) {
+        throw new Error('simulated migration failure');
+      }
+      return db.execute(sql, params);
+    }
+  };
+
+  await assert.rejects(
+    runDbMigrations(failingDb),
+    /Database migration 1 \(baseline-catalog-schema\) failed: simulated migration failure/
+  );
+  assert.equal(sqlite.prepare('SELECT version FROM schema_migrations').all().length, 0);
+  sqlite.close();
+});
+
 test('inferMetadata parses release codes, bare 1080 resolution, and year', () => {
   const res = store.inferMetadata('Blondes Have More Fun RET_BHMF_1080_1979.mp4');
   assert.equal(res.title, 'Blondes Have More Fun');
@@ -26,6 +112,7 @@ test('inferMetadata parses release codes, bare 1080 resolution, and year', () =>
   assert.equal(res2.year, '2001');
   assert.equal(res2.quality, '1080p');
   assert.equal(res2.imdb_id, 'tt0062622');
+  assert.equal(res2.imdb_id_source, 'folder-name');
 });
 
 test('computeSeasonWatchStatus rolls up episode watch states', () => {
@@ -143,6 +230,183 @@ test('fetchEnrichedMovie resolves missing IMDb ID via IMDb suggestion first-lett
   } finally {
     globalThis.window = origWindow;
   }
+});
+
+test('fetchEnrichedMovie prefers TMDB external IMDb ID for Cannon Fodder', async () => {
+  const origWindow = globalThis.window;
+  globalThis.window = {
+    fetch: async (url) => {
+      const u = String(url);
+      if (u.includes('/3/movie/777333/external_ids')) {
+        return new Response(JSON.stringify({ imdb_id: 'tt37545848' }), { status: 200 });
+      }
+      if (u.includes('/3/movie/777333')) {
+        return new Response(JSON.stringify({
+          id: 777333,
+          title: 'Cannon Fodder',
+          release_date: '1971-01-01',
+          poster_path: '/cf71.jpg',
+          imdb_id: null,
+          external_ids: {},
+          credits: { crew: [{ job: 'Director', name: 'Vera Neubauer' }], cast: [] }
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    }
+  };
+  try {
+    const enriched = await store.fetchEnrichedMovie({
+      id: 777333,
+      title: 'Cannon Fodder',
+      release_date: '1971-01-01'
+    });
+    assert.equal(enriched.imdb_id, 'tt37545848');
+    assert.equal(enriched.imdb_id_source, 'tmdb');
+  } finally {
+    globalThis.window = origWindow;
+  }
+});
+
+test('fetchEnrichedMovie resolves the 1971 Cannon Fodder IMDb ID from the title-year suggestion', async () => {
+  const origWindow = globalThis.window;
+  const suggestionQueries = [];
+  globalThis.window = {
+    fetch: async (url) => {
+      const u = String(url);
+      if (u.includes('/3/movie/959521/external_ids')) {
+        return new Response(JSON.stringify({ imdb_id: null }), { status: 200 });
+      }
+      if (u.includes('/3/movie/959521')) {
+        return new Response(JSON.stringify({
+          id: 959521,
+          title: 'Cannon Fodder',
+          release_date: '1971-01-01',
+          imdb_id: null,
+          external_ids: {},
+          credits: { crew: [{ job: 'Director', name: 'Vera Neubauer' }], cast: [] }
+        }), { status: 200 });
+      }
+      if (u.includes('/suggestion/')) {
+        const query = decodeURIComponent(u.slice(u.lastIndexOf('/') + 1).replace(/\.json$/, ''));
+        suggestionQueries.push(query);
+        return new Response(JSON.stringify({
+          d: query === 'Cannon Fodder 1971'
+            ? [{ id: 'tt37545848', l: 'Cannon fodder', y: 1971 }]
+            : []
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    }
+  };
+  try {
+    const enriched = await store.fetchEnrichedMovie({
+      id: 959521,
+      title: 'Cannon Fodder',
+      release_date: '1971-01-01'
+    });
+    assert.equal(enriched.imdb_id, 'tt37545848');
+    assert.equal(enriched.imdb_id_source, 'imdb-suggestion');
+    assert.ok(suggestionQueries.includes('Cannon Fodder 1971'));
+  } finally {
+    globalThis.window = origWindow;
+  }
+});
+
+test('IMDb fallback prefers an exact title and closest year over similar-title collisions', async () => {
+  const origWindow = globalThis.window;
+  globalThis.window = {
+    fetch: async (url) => {
+      const u = String(url);
+      if (u.includes('/3/movie/959522/external_ids')) {
+        return new Response(JSON.stringify({ imdb_id: null }), { status: 200 });
+      }
+      if (u.includes('/3/movie/959522')) {
+        return new Response(JSON.stringify({
+          id: 959522,
+          title: 'Cannon Fodder',
+          release_date: '1971-01-01',
+          external_ids: {},
+          credits: { crew: [{ job: 'Director', name: 'Vera Neubauer' }], cast: [] }
+        }), { status: 200 });
+      }
+      if (u.includes('/suggestion/')) {
+        return new Response(JSON.stringify({
+          d: [
+            { id: 'tt9000001', l: 'Cannon Fodder', y: 2018 },
+            { id: 'tt9000002', l: 'Cannon Fodder: The Sequel', y: 1971 },
+            { id: 'tt37545848', l: 'Cannon fodder', y: 1971 }
+          ]
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ query: { search: [] } }), { status: 200 });
+    }
+  };
+  try {
+    const enriched = await store.fetchEnrichedMovie({
+      id: 959522,
+      title: 'Cannon Fodder',
+      release_date: '1971-01-01'
+    });
+    assert.equal(enriched.imdb_id, 'tt37545848');
+    assert.equal(enriched.imdb_id_source, 'imdb-suggestion');
+  } finally {
+    globalThis.window = origWindow;
+  }
+});
+
+test('IMDb fallback distinguishes service failures from a successful no-match result', async () => {
+  const origWindow = globalThis.window;
+  const makeFetch = (fail) => async (url) => {
+    const u = String(url);
+    if (u.includes('/3/movie/959523/external_ids')) {
+      return new Response(JSON.stringify({ imdb_id: null }), { status: 200 });
+    }
+    if (u.includes('/3/movie/959523')) {
+      return new Response(JSON.stringify({
+        id: 959523,
+        title: 'Unknown Obscure Film',
+        release_date: '1971-01-01',
+        external_ids: {},
+        credits: { crew: [], cast: [] }
+      }), { status: 200 });
+    }
+    if (fail && (u.includes('/suggestion/') || u.includes('wikidata.org'))) {
+      return new Response('unavailable', { status: 503 });
+    }
+    if (u.includes('/suggestion/')) return new Response(JSON.stringify({ d: [] }), { status: 200 });
+    if (u.includes('wikidata.org')) return new Response(JSON.stringify({ query: { search: [] } }), { status: 200 });
+    return new Response(JSON.stringify({}), { status: 200 });
+  };
+
+  try {
+    globalThis.window = { fetch: makeFetch(false) };
+    const noMatch = await store.fetchEnrichedMovie({
+      id: 959523,
+      title: 'Unknown Obscure Film',
+      release_date: '1971-01-01'
+    });
+    assert.equal(noMatch.imdb_lookup_status, 'no_match');
+    assert.equal(noMatch.imdb_lookup_error, '');
+
+    globalThis.window = { fetch: makeFetch(true) };
+    const failed = await store.fetchEnrichedMovie({
+      id: 959523,
+      title: 'Unknown Obscure Film',
+      release_date: '1971-01-01'
+    });
+    assert.equal(failed.imdb_lookup_status, 'failed');
+    assert.match(failed.imdb_lookup_error, /503/);
+  } finally {
+    globalThis.window = origWindow;
+  }
+});
+
+test('Tauri HTTP capability allows IMDb suggestion and Wikidata fallback endpoints', () => {
+  const capabilities = JSON.parse(fs.readFileSync('src-tauri/capabilities/default.json', 'utf8'));
+  const http = capabilities.permissions.find(permission => permission.identifier === 'http:default');
+  const allowedUrls = http.allow.map(entry => entry.url);
+  assert.ok(allowedUrls.includes('https://v2.sg.media-imdb.com/**'));
+  assert.ok(allowedUrls.includes('https://www.wikidata.org/**'));
 });
 
 test('searchUniversal enforces strict [adult] filtering and title + date range + keyword filtering', async () => {

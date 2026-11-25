@@ -19,8 +19,11 @@ const { GUPPY_CONFIG } = cfgPath ? await import(cfgPath) : {
     localShareMount: '/Volumes/jelly'
   }
 };
-const ALLOWED_ROOTS = [GUPPY_CONFIG.hostDriveRoot];
-const ART_FILMS_ROOT = GUPPY_CONFIG.artFilmsRoot;
+const HOST_DRIVE_ROOT = process.env.GUPPY_HOST_DRIVE || GUPPY_CONFIG.hostDriveRoot;
+const HOST_JELLY_ROOT = process.env.GUPPY_HOST_JELLY || GUPPY_CONFIG.hostJellyRoot;
+const ALLOWED_ROOTS = [HOST_DRIVE_ROOT];
+const ART_FILMS_ROOT = process.env.GUPPY_ART_FILMS || GUPPY_CONFIG.artFilmsRoot;
+const LAN_API_TOKEN = process.env.GUPPY_LAN_API_TOKEN || GUPPY_CONFIG.lanApiToken || '';
 const LOCAL_BUILD = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../build');
 const STATIC_DIR = fsSync.existsSync(LOCAL_BUILD) ? LOCAL_BUILD : '/Users/je/guppy/build';
 const MIME_TYPES = {
@@ -105,7 +108,7 @@ function getClientLabel(req, isRemoteClient) {
 const server = http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Guppy-Client');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Guppy-Client, X-Guppy-Token');
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
   const rawClientIp = String(req.socket?.remoteAddress || '').replace(/^::ffff:/, '');
@@ -134,9 +137,35 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.url === '/api/notify') {
+      if (!LAN_API_TOKEN || req.headers['x-guppy-token'] !== LAN_API_TOKEN) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized' }));
+        return;
+      }
       broadcastDbChanged('host');
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, clients: sseClients.size }));
+      return;
+    }
+
+    if (req.method === 'GET' && req.url.startsWith('/api/imdb-suggest?')) {
+      const requestUrl = new URL(req.url, 'http://localhost');
+      const query = String(requestUrl.searchParams.get('q') || '').trim();
+      if (!query || query.length > 200) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'A search query between 1 and 200 characters is required.' }));
+        return;
+      }
+
+      const firstChar = query.toLowerCase().replace(/[^a-z0-9]/g, '').charAt(0) || 'x';
+      const upstreamUrl = `https://v2.sg.media-imdb.com/suggestion/${firstChar}/${encodeURIComponent(query)}.json`;
+      const upstream = await fetch(upstreamUrl, { headers: { Accept: 'application/json' } });
+      const responseBody = await upstream.text();
+      res.writeHead(upstream.status, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'public, max-age=300'
+      });
+      res.end(responseBody);
       return;
     }
 
@@ -154,6 +183,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.url === '/api/sql/execute') {
+      if (!LAN_API_TOKEN || req.headers['x-guppy-token'] !== LAN_API_TOKEN) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized' }));
+        return;
+      }
       const sourceLabel = getClientLabel(req, isRemoteClient);
       const params = (body.params || []).map(p =>
         typeof p === 'string' ? p.replace('__SOURCE__', sourceLabel) : p
@@ -190,6 +224,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.url === '/api/fs/mkdir') {
+      if (!LAN_API_TOKEN || req.headers['x-guppy-token'] !== LAN_API_TOKEN) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized' }));
+        return;
+      }
       const target = assertSafePath(body.path, isRemoteClient);
       await fs.mkdir(target, { recursive: Boolean(body.recursive) });
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -198,6 +237,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.url === '/api/fs/rename') {
+      if (!LAN_API_TOKEN || req.headers['x-guppy-token'] !== LAN_API_TOKEN) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized' }));
+        return;
+      }
       const from = assertSafePath(body.oldPath, isRemoteClient);
       const to = assertSafePath(body.newPath, isRemoteClient);
       await fs.rename(from, to);
@@ -207,6 +251,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.url === '/api/fs/remove') {
+      if (!LAN_API_TOKEN || req.headers['x-guppy-token'] !== LAN_API_TOKEN) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized' }));
+        return;
+      }
       const target = assertSafePath(body.path, isRemoteClient);
       await fs.rm(target, { recursive: Boolean(body.recursive), force: true });
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -215,6 +264,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.url === '/api/fs/writeTextFile') {
+      if (!LAN_API_TOKEN || req.headers['x-guppy-token'] !== LAN_API_TOKEN) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized' }));
+        return;
+      }
       const target = assertSafePath(body.path, isRemoteClient);
       await fs.writeFile(target, String(body.contents ?? ''), 'utf8');
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -223,6 +277,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.url === '/api/fs/writeFile') {
+      if (!LAN_API_TOKEN || req.headers['x-guppy-token'] !== LAN_API_TOKEN) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized' }));
+        return;
+      }
       const target = assertSafePath(body.path, isRemoteClient);
       await fs.writeFile(target, Buffer.from(body.bytesBase64 || '', 'base64'));
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -235,7 +294,7 @@ const server = http.createServer(async (req, res) => {
       const reqPath = u.searchParams.get('path') || '';
       const sharePrefix = `${GUPPY_CONFIG.localShareMount}/`;
       const mapped = reqPath.startsWith(sharePrefix)
-        ? `${GUPPY_CONFIG.hostJellyRoot}/` + reqPath.slice(sharePrefix.length)
+        ? `${HOST_JELLY_ROOT}/` + reqPath.slice(sharePrefix.length)
         : reqPath;
       const safeFile = assertSafePath(mapped, true);
       const stat = fsSync.statSync(safeFile);
